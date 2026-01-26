@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+sqlalchemy
+alembic
+python-multipart
+numpy
+faiss-cpu
+python-dateutil
+opencv-python
+onnxruntime
