@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Rajdhani', sans-serif;
+  background-color: #0f1e45;
+}
+
+.deftech-card {
+  @apply bg-[#122454] border border-[#1c356f] rounded-lg p-4 shadow;
+}
+
+.status-pill {
+  @apply px-3 py-1 rounded-full text-xs font-semibold tracking-wide border border-white/20;
+}
