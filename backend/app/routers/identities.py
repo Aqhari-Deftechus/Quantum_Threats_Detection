@@ -38,8 +38,8 @@ def _update_centroid(session: Session, identity: Identity) -> None:
     session.commit()
 
 
-def _add_embeddings_background(embeddings: np.ndarray) -> None:
-    matcher.add_embeddings(embeddings)
+def _add_embeddings_background(embeddings: np.ndarray, identity_ids: list[int], identity_names: dict[int, str]) -> None:
+    matcher.add_embeddings(embeddings, identity_ids, identity_names)
 
 
 def _identity_out(session: Session, identity: Identity) -> IdentityOut:
@@ -115,6 +115,11 @@ def enroll_embedding(
     _update_centroid(session, identity)
     create_audit_event(session, "identity_embedding_enrolled", {"identity_id": identity.id})
 
-    background_tasks.add_task(_add_embeddings_background, normalized)
+    background_tasks.add_task(
+        _add_embeddings_background,
+        normalized,
+        [identity.id] * normalized.shape[0],
+        {identity.id: identity.name},
+    )
 
     return _identity_out(session, identity)

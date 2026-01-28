@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     camera_queue_size: int = 2
     capture_fps: int = 12
 
-    scrfd_model_path: Path = Path("backend/models/scrfd.onnx")
+    scrfd_model_path: Path = Path("backend/models/scrfd_10g_bnkps.onnx")
     detection_mode: str = "AUTO"
     detect_every_n_frames: int = 4
 

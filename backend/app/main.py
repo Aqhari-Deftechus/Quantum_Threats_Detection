@@ -6,16 +6,17 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+import numpy as np
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import Base, engine
 from .logging import setup_logging
-from .models import Camera
+from .models import Camera, Identity, IdentityEmbedding
 from .routers import cameras_router, diagnostics_router, health_router, identities_router, streaming_router
 from .detection_service import run_detection_loop
-from .state import camera_registry, ws_manager
+from .state import camera_registry, ws_manager, matcher
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,14 @@ async def lifespan(app: FastAPI):
         for camera in cameras:
             if camera.enabled:
                 camera_registry.start_worker(camera)
+        embeddings = session.scalars(select(IdentityEmbedding)).all()
+        name_map = {identity.id: identity.name for identity in session.scalars(select(Identity)).all()}
+        if embeddings:
+            vectors = [np.frombuffer(embedding.embedding, dtype="float32") for embedding in embeddings]
+            identity_ids = [embedding.identity_id for embedding in embeddings]
+            matcher.rebuild(np.vstack(vectors), identity_ids, name_map)
+        else:
+            matcher.rebuild(np.empty((0, matcher.dimension), dtype="float32"), [], name_map)
 
     asyncio.create_task(run_detection_loop(camera_registry, ws_manager))
     yield

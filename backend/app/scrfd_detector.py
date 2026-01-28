@@ -71,4 +71,3 @@ class ScrfdDetector:
         face = frame_bgr[y1:y2, x1:x2]
         quality = self._quality(face) if face.size else "LOW"
         return [FaceBox(x1=x1, y1=y1, x2=x2, y2=y2, score=0.5, quality=quality)]
-
