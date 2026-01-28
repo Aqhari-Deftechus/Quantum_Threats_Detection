@@ -49,11 +49,11 @@ export default function App() {
   }, []);
 
   return (
-    <div className="min-h-screen flex">
+    <div className="app-shell">
       <Nav />
-      <div className="flex-1 flex flex-col">
+      <div className="app-content">
         <StatusStrip wsConnected={wsConnected} />
-        <main className="p-6 space-y-6">
+        <main className="app-main">
           <Routes>
             <Route path="/" element={<LiveOps lastOverlay={lastOverlay} />} />
             <Route path="/events" element={<Events />} />
