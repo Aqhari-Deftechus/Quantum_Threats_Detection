@@ -18,8 +18,16 @@ const spaIndexFallback = () => ({
         return;
       }
 
-      const url = req.url?.split('?')[0];
-      if (url !== '/' && url !== '/index.html') {
+      const url = req.url?.split('?')[0] ?? '/';
+      const isAssetRequest =
+        url.startsWith('/@') ||
+        url.startsWith('/src') ||
+        url.startsWith('/node_modules') ||
+        url.startsWith('/__vite') ||
+        url.includes('.') ||
+        url.startsWith('/api');
+
+      if (isAssetRequest) {
         next();
         return;
       }

@@ -1,28 +1,35 @@
 import { NavLink } from 'react-router-dom';
 
 const links = [
-  { to: '/', label: 'Live Ops' },
-  { to: '/events', label: 'Events' },
-  { to: '/identities', label: 'Identities' },
-  { to: '/cameras', label: 'Cameras' },
-  { to: '/settings', label: 'Settings' }
+  { to: '/', label: 'Live Ops', icon: '⬤' },
+  { to: '/events', label: 'Threat Timeline', icon: '▣' },
+  { to: '/identities', label: 'Persons of Interest', icon: '◆' },
+  { to: '/cameras', label: 'Cameras', icon: '▥' },
+  { to: '/settings', label: 'Settings', icon: '⚙' }
 ];
 
 export default function Nav() {
   return (
-    <nav className="flex flex-col gap-2 p-4 bg-[#0b1533] min-h-screen">
-      <div className="text-xl font-bold text-red">QTD</div>
-      {links.map((link) => (
-        <NavLink
-          key={link.to}
-          to={link.to}
-          className={({ isActive }) =>
-            `px-3 py-2 rounded-md ${isActive ? 'bg-red text-white' : 'text-white/80 hover:text-white'}`
-          }
-        >
-          {link.label}
-        </NavLink>
-      ))}
+    <nav className="nav-rail">
+      <div className="nav-title">
+        <span className="nav-mark">QATRS</span>
+        <span className="nav-subtitle">Quantum Adaptive Threat Recognition</span>
+      </div>
+      <div className="nav-section">TACTICAL</div>
+      <div className="nav-links">
+        {links.map((link) => (
+          <NavLink
+            key={link.to}
+            to={link.to}
+            className={({ isActive }) =>
+              `nav-link ${isActive ? 'nav-link-active' : ''}`
+            }
+          >
+            <span className="nav-icon">{link.icon}</span>
+            <span className="nav-label">{link.label}</span>
+          </NavLink>
+        ))}
+      </div>
     </nav>
   );
 }

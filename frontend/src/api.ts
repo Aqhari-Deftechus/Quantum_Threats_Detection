@@ -33,6 +33,16 @@ export type Camera = {
   camera_status: string;
 };
 
+export type CameraHealth = {
+  camera_id: number;
+  status: string;
+  last_seen: string | null;
+  fps: number;
+  dropped_frames: number;
+  queue_depth: number;
+  latency_ms: number;
+};
+
 export type Identity = {
   id: number;
   name: string;
@@ -54,6 +64,11 @@ export async function fetchSystemHealth(): Promise<SystemHealthResponse> {
 
 export async function fetchCameras(): Promise<Camera[]> {
   const response = await fetch(`${API_BASE}/cameras`);
+  return response.json();
+}
+
+export async function fetchCameraHealth(cameraId: number): Promise<CameraHealth> {
+  const response = await fetch(`${API_BASE}/cameras/${cameraId}/health`);
   return response.json();
 }
 
