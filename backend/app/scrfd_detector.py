@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Iterable
 
@@ -27,13 +28,31 @@ class ScrfdDetector:
         self.input_name: str | None = None
         self.input_shape: tuple[int, int] = (640, 640)
         self._feat_strides = [8, 16, 32]
+        self._load_error: str | None = None
         self._load_session()
 
+    def _looks_like_lfs_pointer(self, path: Path) -> bool:
+        try:
+            with path.open("rb") as handle:
+                first_line = handle.readline().strip()
+            return first_line == b"version https://git-lfs.github.com/spec/v1"
+        except OSError:
+            return False
+
     def _load_session(self) -> None:
+        logger = logging.getLogger(__name__)
         try:
             import onnxruntime as ort
 
             if not self.model_path.exists():
+                self._load_error = f"SCRFD model missing at {self.model_path}"
+                logger.error(self._load_error)
+                return
+            if self._looks_like_lfs_pointer(self.model_path):
+                self._load_error = (
+                    "SCRFD model is a Git LFS pointer. Run `git lfs pull` to download the real model."
+                )
+                logger.error(self._load_error)
                 return
             self.session = ort.InferenceSession(str(self.model_path), providers=["CPUExecutionProvider"])
             self.input_name = self.session.get_inputs()[0].name
@@ -42,6 +61,8 @@ class ScrfdDetector:
                 self.input_shape = (shape[3], shape[2])
         except Exception:
             self.session = None
+            self._load_error = "SCRFD model failed to load. Check ONNX runtime logs for details."
+            logger.exception(self._load_error)
 
     def _quality(self, face: np.ndarray) -> str:
         h, w = face.shape[:2]
