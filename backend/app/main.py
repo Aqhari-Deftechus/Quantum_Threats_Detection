@@ -15,6 +15,8 @@ from .db import Base, engine
 from .logging import setup_logging
 from .models import Camera, Identity, IdentityEmbedding
 from .routers import cameras_router, diagnostics_router, health_router, identities_router, streaming_router
+from .routers.debug import router as debug_router
+from .routers.vision import router as vision_router
 from .detection_service import run_detection_loop
 from .state import camera_registry, ws_manager, matcher
 
@@ -66,6 +68,8 @@ app.include_router(cameras_router, prefix="/api")
 app.include_router(diagnostics_router, prefix="/api")
 app.include_router(identities_router, prefix="/api")
 app.include_router(streaming_router, prefix="/api")
+app.include_router(vision_router, prefix="/api")
+app.include_router(debug_router, prefix="/api")
 
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 

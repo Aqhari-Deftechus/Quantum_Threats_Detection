@@ -7,6 +7,11 @@ from typing import Iterable
 
 import cv2
 import numpy as np
+import onnxruntime as ort
+
+from .vision.onnx_utils import ModelFileStatus, create_session, inspect_model_file
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -17,6 +22,15 @@ class FaceBox:
     y2: int
     score: float
     quality: str
+    landmarks: np.ndarray | None
+
+
+@dataclass
+class DetectorStatus:
+    ready: bool
+    error: str | None
+    provider: str
+    model: ModelFileStatus
 
 
 class ScrfdDetector:
@@ -24,41 +38,35 @@ class ScrfdDetector:
         self.model_path = model_path
         self.score_thresh = score_thresh
         self.nms_thresh = nms_thresh
-        self.session = None
+        self.session: ort.InferenceSession | None = None
         self.input_name: str | None = None
         self.input_shape: tuple[int, int] = (640, 640)
         self._feat_strides = [8, 16, 32]
         self._load_error: str | None = None
+        self.provider = "UNKNOWN"
+        self.model_status = inspect_model_file(model_path)
         self._load_session()
 
-    def _looks_like_lfs_pointer(self, path: Path) -> bool:
-        try:
-            with path.open("rb") as handle:
-                first_line = handle.readline().strip()
-            return first_line == b"version https://git-lfs.github.com/spec/v1"
-        except OSError:
-            return False
+    def status(self) -> DetectorStatus:
+        return DetectorStatus(
+            ready=self.session is not None,
+            error=self._load_error,
+            provider=self.provider,
+            model=self.model_status,
+        )
 
     def _load_session(self) -> None:
-        logger = logging.getLogger(__name__)
+        if not self.model_status.exists or self.model_status.is_lfs_pointer:
+            self._load_error = self.model_status.error or "SCRFD model unavailable."
+            logger.error(self._load_error)
+            return
         try:
-            import onnxruntime as ort
-
-            if not self.model_path.exists():
-                self._load_error = f"SCRFD model missing at {self.model_path}"
-                logger.error(self._load_error)
-                return
-            if self._looks_like_lfs_pointer(self.model_path):
-                self._load_error = (
-                    "SCRFD model is a Git LFS pointer. Run `git lfs pull` to download the real model."
-                )
-                logger.error(self._load_error)
-                return
-            self.session = ort.InferenceSession(str(self.model_path), providers=["CPUExecutionProvider"])
+            self.session, self.provider = create_session(self.model_path)
             self.input_name = self.session.get_inputs()[0].name
             shape = self.session.get_inputs()[0].shape
             if isinstance(shape[2], int) and isinstance(shape[3], int):
                 self.input_shape = (shape[3], shape[2])
+            logger.info("SCRFD loaded: %s", self.model_path)
         except Exception:
             self.session = None
             self._load_error = "SCRFD model failed to load. Check ONNX runtime logs for details."
@@ -110,20 +118,27 @@ class ScrfdDetector:
 
     def _infer_num_anchors(self, scores: np.ndarray, feat_h: int, feat_w: int) -> int:
         total = scores.shape[1] if scores.ndim >= 2 else scores.shape[0]
-        anchors = max(int(total // (feat_h * feat_w)), 1)
-        return anchors
+        return max(int(total // (feat_h * feat_w)), 1)
 
-    def _decode(self, outputs: Iterable[np.ndarray], scale_x: float, scale_y: float, frame: np.ndarray) -> list[FaceBox]:
+    def _decode(
+        self,
+        outputs: Iterable[np.ndarray],
+        scale_x: float,
+        scale_y: float,
+        frame: np.ndarray,
+    ) -> list[FaceBox]:
         outputs_list = list(outputs)
         if not outputs_list:
             return []
-        use_kps = len(outputs_list) % 3 == 0
+        use_kps = len(outputs_list) >= 9
         stride_count = len(outputs_list) // (3 if use_kps else 2)
         scores_list = outputs_list[:stride_count]
         bboxes_list = outputs_list[stride_count : stride_count * 2]
+        kps_list = outputs_list[stride_count * 2 : stride_count * 3] if use_kps else []
 
         all_boxes: list[np.ndarray] = []
         all_scores: list[np.ndarray] = []
+        all_kps: list[np.ndarray] = []
 
         input_w, input_h = self.input_shape
 
@@ -136,40 +151,57 @@ class ScrfdDetector:
 
             scores = scores.reshape(-1)
             bboxes = bboxes.reshape((-1, 4))
+            kps = kps_list[idx].reshape((-1, 10)) if use_kps else None
 
+            num_anchors = max(int(scores.size // (feat_h * feat_w)), 1)
             anchor_centers = np.stack(np.mgrid[:feat_h, :feat_w], axis=-1).astype(np.float32)
             anchor_centers = anchor_centers * stride
             anchor_centers = anchor_centers.reshape((-1, 2))
             if num_anchors > 1:
                 anchor_centers = np.repeat(anchor_centers, num_anchors, axis=0)
+            if anchor_centers.shape[0] != scores.size:
+                min_len = min(anchor_centers.shape[0], scores.size)
+                anchor_centers = anchor_centers[:min_len]
+                scores = scores[:min_len]
+                bboxes = bboxes[:min_len]
+                if use_kps and kps is not None:
+                    kps = kps[:min_len]
 
             pos_inds = np.where(scores >= self.score_thresh)[0]
             if pos_inds.size == 0:
                 continue
             scores = scores[pos_inds]
             bboxes = bboxes[pos_inds]
-            anchor_centers = anchor_centers[pos_inds]
+            centers = anchor_centers[pos_inds]
+            if use_kps and kps is not None:
+                kps = kps[pos_inds]
 
-            x1 = anchor_centers[:, 0] - bboxes[:, 0]
-            y1 = anchor_centers[:, 1] - bboxes[:, 1]
-            x2 = anchor_centers[:, 0] + bboxes[:, 2]
-            y2 = anchor_centers[:, 1] + bboxes[:, 3]
+            x1 = centers[:, 0] - bboxes[:, 0]
+            y1 = centers[:, 1] - bboxes[:, 1]
+            x2 = centers[:, 0] + bboxes[:, 2]
+            y2 = centers[:, 1] + bboxes[:, 3]
             boxes = np.stack([x1, y1, x2, y2], axis=1)
             all_boxes.append(boxes)
             all_scores.append(scores)
+            if use_kps and kps is not None:
+                kps = kps.reshape((-1, 5, 2))
+                kps = kps + centers[:, None, :]
+                all_kps.append(kps)
 
         if not all_boxes:
             return []
 
         all_boxes_np = np.concatenate(all_boxes, axis=0)
         all_scores_np = np.concatenate(all_scores, axis=0)
+        all_kps_np = np.concatenate(all_kps, axis=0) if all_kps else None
 
         keep = self._nms(all_boxes_np, all_scores_np)
         boxes_kept = all_boxes_np[keep]
         scores_kept = all_scores_np[keep]
+        kps_kept = all_kps_np[keep] if all_kps_np is not None else None
 
         faces: list[FaceBox] = []
-        for box, score in zip(boxes_kept, scores_kept):
+        for idx, (box, score) in enumerate(zip(boxes_kept, scores_kept)):
             x1 = int(max(0, box[0] * scale_x))
             y1 = int(max(0, box[1] * scale_y))
             x2 = int(min(frame.shape[1], box[2] * scale_x))
@@ -177,6 +209,12 @@ class ScrfdDetector:
             if x2 <= x1 or y2 <= y1:
                 continue
             face_crop = frame[y1:y2, x1:x2]
+            landmarks = None
+            if kps_kept is not None:
+                kps = kps_kept[idx].copy()
+                kps[:, 0] = kps[:, 0] * scale_x
+                kps[:, 1] = kps[:, 1] * scale_y
+                landmarks = kps
             faces.append(
                 FaceBox(
                     x1=x1,
@@ -185,6 +223,7 @@ class ScrfdDetector:
                     y2=y2,
                     score=float(score),
                     quality=self._quality(face_crop),
+                    landmarks=landmarks,
                 )
             )
         return faces
@@ -197,4 +236,5 @@ class ScrfdDetector:
             outputs = self.session.run(None, {self.input_name: blob})
             return self._decode(outputs, scale_x, scale_y, frame_bgr)
         except Exception:
+            logger.exception("SCRFD inference failed.")
             return []

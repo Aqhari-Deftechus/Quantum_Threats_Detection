@@ -1,79 +1,53 @@
 from __future__ import annotations
 
+import logging
 import time
-from threading import Lock
-from typing import Generator, Optional
+from typing import Generator
 
 import cv2
-import numpy as np
 from fastapi import APIRouter, HTTPException
 from starlette.responses import StreamingResponse
 
-from ..config import get_settings
-from ..scrfd_detector import ScrfdDetector
-from ..state import camera_registry
+from ..state import analysis_store, camera_registry, vision_service
 
 router = APIRouter(prefix="/cameras")
-
-_detector_lock = Lock()
-_detector: Optional[ScrfdDetector] = None
-
-
-def _get_detector() -> ScrfdDetector:
-    global _detector
-    with _detector_lock:
-        if _detector is None:
-            settings = get_settings()
-            _detector = ScrfdDetector(settings.scrfd_model_path)
-        return _detector
-
-
-def _draw_faces(frame_bgr: np.ndarray, faces: list) -> np.ndarray:
-    annotated = frame_bgr.copy()
-    for face in faces:
-        cv2.rectangle(annotated, (face.x1, face.y1), (face.x2, face.y2), (0, 255, 0), 2)
-        label = f"UNKNOWN {face.score:.2f}"
-        cv2.putText(
-            annotated,
-            label,
-            (face.x1, max(face.y1 - 8, 0)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 255, 0),
-            1,
-            cv2.LINE_AA,
-        )
-    return annotated
+logger = logging.getLogger(__name__)
 
 
 def _mjpeg_generator(camera_id: int) -> Generator[bytes, None, None]:
-    detector = _get_detector()
     while True:
-        runtime = camera_registry.snapshot_metrics(camera_id)
-        #runtime = camera_registry.get(camera_id)
+        try:
+            runtime = camera_registry.snapshot_metrics(camera_id)
+            if not runtime or not runtime.worker:
+                frame_bgr = vision_service.placeholder_frame("NO SIGNAL")
+                faces = []
+            else:
+                latest = runtime.worker.get_latest_bgr()
+                if not latest:
+                    frame_bgr = vision_service.placeholder_frame("NO SIGNAL")
+                    faces = []
+                else:
+                    _, frame_bgr = latest
+                    faces = vision_service.analyze_frame(camera_id, frame_bgr, force_detect=True)
 
-        if not runtime or not runtime.worker:
-            time.sleep(0.1)
-            continue
-        latest = runtime.worker.get_latest_bgr()
-        if not latest:
-            time.sleep(0.01)
-            continue
-        _, frame_bgr = latest
-        faces = detector.detect(frame_bgr)
-        if faces:
-            print(f"[SCRFD] camera={camera_id} faces={len(faces)} score_top={faces[0].score:.3f}")
-        annotated = _draw_faces(frame_bgr, faces)
-        success, buffer = cv2.imencode(".jpg", annotated)
-        if not success:
-            time.sleep(0.01)
-            continue
-        frame = buffer.tobytes()
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-        )
-        time.sleep(0.03)
+            analysis_store.update(camera_id, [face.__dict__ for face in faces])
+            annotated = vision_service.annotate(frame_bgr, faces)
+            success, buffer = cv2.imencode(".jpg", annotated)
+            if not success:
+                time.sleep(0.01)
+                continue
+            frame = buffer.tobytes()
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+            time.sleep(0.03)
+        except GeneratorExit:
+            return
+        except Exception:
+            logger.exception("MJPEG generator failed; keeping stream alive.")
+            frame_bgr = vision_service.placeholder_frame("STREAM ERROR")
+            success, buffer = cv2.imencode(".jpg", frame_bgr)
+            if success:
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
+            time.sleep(0.2)
 
 
 @router.get("/{camera_id}/mjpeg")

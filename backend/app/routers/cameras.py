@@ -16,8 +16,10 @@ from ..schemas import (
     CameraOut,
     CameraTestRequest,
     CameraUpdate,
+    CameraAnalysisResponse,
+    FaceDetectionOut,
 )
-from ..state import camera_registry
+from ..state import analysis_store, camera_registry
 from ..utils import redact_rtsp
 
 router = APIRouter(prefix="/cameras")
@@ -175,4 +177,29 @@ def camera_health(camera_id: int, session: Session = Depends(get_session)) -> Ca
         dropped_frames=runtime.dropped_frames,
         queue_depth=runtime.queue_depth,
         latency_ms=runtime.latency_ms,
+    )
+
+
+@router.get("/{camera_id}/analysis", response_model=CameraAnalysisResponse)
+def camera_analysis(camera_id: int, session: Session = Depends(get_session)) -> CameraAnalysisResponse:
+    camera = session.get(Camera, camera_id)
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    snapshot = analysis_store.get(camera_id)
+    faces = snapshot.faces if snapshot else []
+    output_faces = [
+        FaceDetectionOut(
+            box=face.get("box", []),
+            score=face.get("score", 0.0),
+            label=face.get("label", "Unknown"),
+            similarity=face.get("similarity", 0.0),
+            quality=face.get("quality", "LOW"),
+            landmarks=face.get("landmarks"),
+        )
+        for face in faces
+    ]
+    return CameraAnalysisResponse(
+        camera_id=camera_id,
+        timestamp=snapshot.timestamp if snapshot else datetime.now(timezone.utc),
+        faces=output_faces,
     )
