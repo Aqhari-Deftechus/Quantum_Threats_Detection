@@ -80,7 +80,31 @@ class StatusResponse(BaseModel):
 class SystemHealthResponse(BaseModel):
     status: str
     metrics: dict[str, float]
+    scrfd_model_ready: bool | None = None
+    arcface_model_ready: bool | None = None
+    onnxruntime_provider: str | None = None
+    last_error: Optional[str] = None
     timestamp: datetime
+
+
+class FaceDetectionOut(BaseModel):
+    box: list[int]
+    score: float
+    label: str
+    similarity: float
+    quality: str
+    landmarks: list[list[float]] | None = None
+
+
+class DetectionResponse(BaseModel):
+    faces: list[FaceDetectionOut]
+    timestamp: datetime
+
+
+class CameraAnalysisResponse(BaseModel):
+    camera_id: int
+    timestamp: datetime
+    faces: list[FaceDetectionOut]
 
 
 class IdentityCreate(BaseModel):

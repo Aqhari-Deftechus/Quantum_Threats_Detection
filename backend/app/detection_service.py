@@ -6,8 +6,8 @@ from typing import Any
 
 from .camera_registry import CameraRegistry
 from .config import get_settings
-from .scrfd_detector import ScrfdDetector
 from .ws import WebSocketManager
+from .state import analysis_store, vision_service
 
 
 def _overlay_payload(camera_id: int, faces: list[dict[str, Any]]) -> dict[str, Any]:
@@ -30,7 +30,6 @@ def _overlay_payload(camera_id: int, faces: list[dict[str, Any]]) -> dict[str, A
 
 async def run_detection_loop(camera_registry: CameraRegistry, ws_manager: WebSocketManager) -> None:
     settings = get_settings()
-    detector = ScrfdDetector(settings.scrfd_model_path)
     frame_counters: dict[int, int] = {}
 
     while True:
@@ -50,15 +49,20 @@ async def run_detection_loop(camera_registry: CameraRegistry, ws_manager: WebSoc
                 continue
 
             faces = []
-            for face in detector.detect(frame):
+            analyzed = vision_service.analyze_frame(runtime.camera_id, frame, force_detect=False)
+            for face in analyzed:
                 faces.append(
                     {
-                        "box": [face.x1, face.y1, face.x2, face.y2],
+                        "box": face.box,
                         "score": face.score,
                         "quality": face.quality,
-                        "label": "UNKNOWN",
+                        "label": face.label,
+                        "similarity": face.similarity,
+                        "landmarks": face.landmarks,
                     }
                 )
+
+            analysis_store.update(runtime.camera_id, faces)
 
             payload = _overlay_payload(runtime.camera_id, faces)
             await ws_manager.broadcast(payload)

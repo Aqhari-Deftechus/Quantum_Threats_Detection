@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     capture_fps: int = 12
 
     scrfd_model_path: Path = Path("backend/models/scrfd_10g_bnkps.onnx")
+    arcface_model_path: Path = Path("backend/models/glintr100.onnx")
+    watchlist_dir: Path = Path("backend/watchlist")
+    watchlist_match_threshold: float = 0.35
+    scrfd_score_threshold: float = 0.5
+    scrfd_nms_threshold: float = 0.4
     detection_mode: str = "AUTO"
     detect_every_n_frames: int = 4
 

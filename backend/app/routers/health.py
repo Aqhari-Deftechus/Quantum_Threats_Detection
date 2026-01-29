@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from ..audit import verify_chain
 from ..db import get_session
 from ..schemas import HealthResponse, StatusResponse, SystemHealthResponse
-from ..state import camera_registry, matcher
+from ..state import camera_registry, matcher, vision_service
 
 router = APIRouter()
 
@@ -23,6 +23,7 @@ async def status(session: Session = Depends(get_session)) -> StatusResponse:
     match_status = matcher.status()
     chain_ok, _ = verify_chain(session)
     cameras = camera_registry.list()
+    vision_status = vision_service.status()
     live = sum(1 for camera in cameras if camera.status == "LIVE")
     down = sum(1 for camera in cameras if camera.status in {"DOWN", "DEGRADED"})
     total_fps = sum(camera.fps for camera in cameras)
@@ -32,7 +33,7 @@ async def status(session: Session = Depends(get_session)) -> StatusResponse:
     count = len(cameras) or 1
     return StatusResponse(
         system="OK",
-        inference="CPU",
+        inference=vision_status.provider,
         matcher=match_status.mode,
         matcher_index_status=match_status.index_status,
         evidence="INTEGRITY OK" if chain_ok else "VERIFY FAIL",
@@ -51,6 +52,7 @@ async def status(session: Session = Depends(get_session)) -> StatusResponse:
 @router.get("/system/health", response_model=SystemHealthResponse)
 async def system_health(session: Session = Depends(get_session)) -> SystemHealthResponse:
     chain_ok, _ = verify_chain(session)
+    vision_status = vision_service.status()
     metrics = {
         "fps": 0.0,
         "latency_ms": 0.0,
@@ -59,5 +61,9 @@ async def system_health(session: Session = Depends(get_session)) -> SystemHealth
     return SystemHealthResponse(
         status="OK" if chain_ok else "DEGRADED",
         metrics=metrics,
+        scrfd_model_ready=vision_status.scrfd_ready,
+        arcface_model_ready=vision_status.arcface_ready,
+        onnxruntime_provider=vision_status.provider,
+        last_error=vision_status.last_error,
         timestamp=datetime.now(timezone.utc),
     )
