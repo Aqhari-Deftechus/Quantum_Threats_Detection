@@ -26,8 +26,10 @@ class Settings(BaseSettings):
     arcface_model_path: Path = Path("backend/models/glintr100.onnx")
     watchlist_dir: Path = Path("backend/watchlist")
     watchlist_match_threshold: float = 0.35
-    scrfd_score_threshold: float = 0.5
+    scrfd_score_threshold: float = 0.3
     scrfd_nms_threshold: float = 0.4
+    scrfd_backend: str = "insightface"
+    insightface_det_size: tuple[int, int] = (640, 640)
     detection_mode: str = "AUTO"
     detect_every_n_frames: int = 4
 

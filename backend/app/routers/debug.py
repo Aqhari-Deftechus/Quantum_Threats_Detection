@@ -12,6 +12,11 @@ def debug_models() -> dict[str, object]:
     return vision_service.model_report()
 
 
+@router.get("/scrfd/io")
+def debug_scrfd_io() -> dict[str, object]:
+    return vision_service.scrfd_io_report()
+
+
 @router.get("/cameras/{camera_id}/last_detection")
 def debug_last_detection(camera_id: int) -> dict[str, object]:
     runtime = camera_registry.get(camera_id)
