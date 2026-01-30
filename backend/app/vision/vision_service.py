@@ -8,10 +8,11 @@ import cv2
 import numpy as np
 
 from ..config import get_settings
-from ..scrfd_detector import FaceBox, ScrfdDetector
+from ..scrfd_detector import FaceBox
 from .face_alignment import FaceAligner
 from .face_recognizer import ArcFaceRecognizer
 from .watchlist import WatchlistManager
+from .detector_factory import DetectorProtocol, create_detector
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +38,7 @@ class VisionStatus:
 class VisionService:
     def __init__(self) -> None:
         settings = get_settings()
-        self.detector = ScrfdDetector(
-            settings.scrfd_model_path,
-            score_thresh=settings.scrfd_score_threshold,
-            nms_thresh=settings.scrfd_nms_threshold,
-        )
+        self.detector: DetectorProtocol = create_detector(settings)
         self.recognizer = ArcFaceRecognizer(settings.arcface_model_path)
         self.aligner = FaceAligner()
         self.watchlist = WatchlistManager(
@@ -89,6 +86,9 @@ class VisionService:
             "watchlist_error": self.watchlist.load_error,
         }
 
+    def scrfd_io_report(self) -> dict[str, object]:
+        return self.detector.io_report()
+
     def _face_to_result(self, face: FaceBox, name: str, similarity: float) -> FaceResult:
         landmarks = None
         if face.landmarks is not None:
@@ -108,7 +108,7 @@ class VisionService:
         self._frame_counter[camera_id] = counter
         if not force_detect and counter % max(settings.detect_every_n_frames, 1) != 0:
             return self._last_faces.get(camera_id, [])
-        if self.detector.session is None:
+        if not self.detector.status().ready:
             self._last_error = self.detector.status().error
             return []
         faces = self.detector.detect(frame_bgr)

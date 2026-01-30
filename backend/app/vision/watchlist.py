@@ -9,7 +9,7 @@ import numpy as np
 
 from .face_alignment import FaceAligner
 from .face_recognizer import ArcFaceRecognizer
-from ..scrfd_detector import ScrfdDetector
+from .detector_factory import DetectorProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ class WatchlistManager:
     def __init__(
         self,
         watchlist_dir: Path,
-        detector: ScrfdDetector,
+        detector: DetectorProtocol,
         recognizer: ArcFaceRecognizer,
         aligner: FaceAligner,
         similarity_threshold: float,
@@ -36,13 +36,15 @@ class WatchlistManager:
         self.similarity_threshold = similarity_threshold
         self.entries: list[WatchlistEntry] = []
         self._load_error: str | None = None
+        self._failure_count = 0
         self.reload()
 
     def reload(self) -> None:
         self.entries = []
         self._load_error = None
+        self._failure_count = 0
         self.watchlist_dir.mkdir(parents=True, exist_ok=True)
-        if self.detector.session is None or self.recognizer.session is None:
+        if not self.detector.status().ready or self.recognizer.session is None:
             self._load_error = "Models not ready for watchlist enrollment."
             logger.warning(self._load_error)
             return
@@ -57,7 +59,28 @@ class WatchlistManager:
                     continue
                 faces = self.detector.detect(image)
                 if not faces:
-                    logger.warning("No face detected in watchlist image: %s", image_path)
+                    provider = self.detector.status().provider
+                    logger.warning(
+                        "No face detected in watchlist image: %s (score_threshold=%.2f, provider=%s)",
+                        image_path,
+                        self.detector.score_thresh,
+                        provider,
+                    )
+                    if self._failure_count < 3:
+                        debug_faces = self.detector.detect(image)
+                        logger.warning(
+                            "SCRFD debug detect: faces=%d",
+                            len(debug_faces),
+                        )
+                        if debug_faces:
+                            top_face = max(debug_faces, key=lambda f: f.score)
+                            logger.warning(
+                                "SCRFD debug top score=%.4f box=%s",
+                                top_face.score,
+                                [top_face.x1, top_face.y1, top_face.x2, top_face.y2],
+                            )
+                        logger.warning("SCRFD IO report: %s", self.detector.io_report())
+                    self._failure_count += 1
                     continue
                 face = max(faces, key=lambda f: f.score)
                 if face.landmarks is None:

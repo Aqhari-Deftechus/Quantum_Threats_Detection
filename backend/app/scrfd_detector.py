@@ -34,7 +34,7 @@ class DetectorStatus:
 
 
 class ScrfdDetector:
-    def __init__(self, model_path: Path, score_thresh: float = 0.5, nms_thresh: float = 0.4) -> None:
+    def __init__(self, model_path: Path, score_thresh: float = 0.3, nms_thresh: float = 0.4) -> None:
         self.model_path = model_path
         self.score_thresh = score_thresh
         self.nms_thresh = nms_thresh
@@ -43,6 +43,9 @@ class ScrfdDetector:
         self.input_shape: tuple[int, int] = (640, 640)
         self._feat_strides = [8, 16, 32]
         self._load_error: str | None = None
+        self._last_error: str | None = None
+        self._output_names: list[str] = []
+        self._output_shapes: list[tuple[int | str | None, ...]] = []
         self.provider = "UNKNOWN"
         self.model_status = inspect_model_file(model_path)
         self._load_session()
@@ -50,7 +53,7 @@ class ScrfdDetector:
     def status(self) -> DetectorStatus:
         return DetectorStatus(
             ready=self.session is not None,
-            error=self._load_error,
+            error=self._last_error or self._load_error,
             provider=self.provider,
             model=self.model_status,
         )
@@ -66,6 +69,11 @@ class ScrfdDetector:
             shape = self.session.get_inputs()[0].shape
             if isinstance(shape[2], int) and isinstance(shape[3], int):
                 self.input_shape = (shape[3], shape[2])
+            self._output_names = [output.name for output in self.session.get_outputs()]
+            self._output_shapes = [tuple(output.shape) for output in self.session.get_outputs()]
+            logger.info("SCRFD input: %s %s", self.input_name, shape)
+            for output_name, output_shape in zip(self._output_names, self._output_shapes):
+                logger.info("SCRFD output: %s %s", output_name, output_shape)
             logger.info("SCRFD loaded: %s", self.model_path)
         except Exception:
             self.session = None
@@ -108,33 +116,125 @@ class ScrfdDetector:
             order = order[inds + 1]
         return keep
 
-    def _prepare(self, frame_bgr: np.ndarray) -> tuple[np.ndarray, float, float]:
+    def _prepare(self, frame_bgr: np.ndarray) -> tuple[np.ndarray, float, float, int, int]:
         input_w, input_h = self.input_shape
-        resized = cv2.resize(frame_bgr, (input_w, input_h))
-        scale_x = frame_bgr.shape[1] / input_w
-        scale_y = frame_bgr.shape[0] / input_h
-        blob = cv2.dnn.blobFromImage(resized, 1.0 / 128.0, (input_w, input_h), (127.5, 127.5, 127.5))
-        return blob, scale_x, scale_y
+        src_h, src_w = frame_bgr.shape[:2]
+        scale = min(input_w / src_w, input_h / src_h)
+        resized_w = int(src_w * scale)
+        resized_h = int(src_h * scale)
+        resized = cv2.resize(frame_bgr, (resized_w, resized_h))
+        canvas = np.zeros((input_h, input_w, 3), dtype=np.float32)
+        pad_x = (input_w - resized_w) // 2
+        pad_y = (input_h - resized_h) // 2
+        canvas[pad_y : pad_y + resized_h, pad_x : pad_x + resized_w] = resized.astype(np.float32)
+        canvas = (canvas - 127.5) / 128.0
+        blob = np.transpose(canvas, (2, 0, 1))[None, :, :, :]
+        scale_x = 1.0 / scale
+        scale_y = 1.0 / scale
+        return blob, scale_x, scale_y, pad_x, pad_y
 
-    def _infer_num_anchors(self, scores: np.ndarray, feat_h: int, feat_w: int) -> int:
-        total = scores.shape[1] if scores.ndim >= 2 else scores.shape[0]
-        return max(int(total // (feat_h * feat_w)), 1)
+    def _infer_stride_from_shape(self, shape: tuple[int | None, ...]) -> int | None:
+        input_w, input_h = self.input_shape
+        if len(shape) == 4:
+            feat_h = shape[2]
+            feat_w = shape[3]
+            if isinstance(feat_h, int) and isinstance(feat_w, int) and feat_h > 0 and feat_w > 0:
+                return int(input_h / feat_h)
+        if len(shape) >= 2 and isinstance(shape[-2], int):
+            total = int(shape[-2])
+            for stride in self._feat_strides:
+                feat_h = int(input_h / stride)
+                feat_w = int(input_w / stride)
+                if feat_h > 0 and feat_w > 0 and total % (feat_h * feat_w) == 0:
+                    return stride
+        return None
+
+    def _score_from_tensor(self, scores: np.ndarray, feat_h: int, feat_w: int) -> np.ndarray:
+        if scores.ndim == 4:
+            _, channels, _, _ = scores.shape
+            scores = scores.reshape((channels, feat_h, feat_w))
+            scores = scores.transpose((1, 2, 0)).reshape((-1,))
+        elif scores.ndim in (2, 3):
+            scores = scores.reshape((-1,))
+        else:
+            raise ValueError(f"SCRFD score tensor has invalid shape: {scores.shape}")
+        if scores.size and (scores.min() < 0.0 or scores.max() > 1.0):
+            scores = 1.0 / (1.0 + np.exp(-scores))
+        return scores
+
+    def _bbox_from_tensor(self, bboxes: np.ndarray, feat_h: int, feat_w: int) -> np.ndarray:
+        if bboxes.ndim == 4:
+            _, channels, _, _ = bboxes.shape
+            anchors = max(int(channels // 4), 1)
+            bboxes = bboxes.reshape((anchors, 4, feat_h, feat_w))
+            return bboxes.transpose((2, 3, 0, 1)).reshape((-1, 4))
+        if bboxes.ndim == 3:
+            return bboxes.reshape((-1, 4))
+        if bboxes.ndim == 2:
+            return bboxes.reshape((-1, 4))
+        raise ValueError(f"SCRFD bbox tensor has invalid shape: {bboxes.shape}")
+
+    def _kps_from_tensor(self, kps: np.ndarray, feat_h: int, feat_w: int) -> np.ndarray:
+        if kps.ndim == 4:
+            _, channels, _, _ = kps.shape
+            anchors = max(int(channels // 10), 1)
+            kps = kps.reshape((anchors, 10, feat_h, feat_w))
+            return kps.transpose((2, 3, 0, 1)).reshape((-1, 10))
+        if kps.ndim == 3:
+            return kps.reshape((-1, 10))
+        if kps.ndim == 2:
+            return kps.reshape((-1, 10))
+        raise ValueError(f"SCRFD kps tensor has invalid shape: {kps.shape}")
+
+    def _split_outputs(self, outputs: list[np.ndarray]) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray], dict[int, np.ndarray]]:
+        scores_map: dict[int, np.ndarray] = {}
+        bboxes_map: dict[int, np.ndarray] = {}
+        kps_map: dict[int, np.ndarray] = {}
+
+        for idx, output in enumerate(outputs):
+            name = self._output_names[idx].lower() if idx < len(self._output_names) else ""
+            shape = self._output_shapes[idx] if idx < len(self._output_shapes) else output.shape
+            stride = self._infer_stride_from_shape(tuple(shape))
+            if stride is None:
+                continue
+            if any(token in name for token in ("score", "cls", "conf")):
+                scores_map[stride] = output
+                continue
+            if any(token in name for token in ("bbox", "box", "loc")):
+                bboxes_map[stride] = output
+                continue
+            if any(token in name for token in ("kps", "landmark")):
+                kps_map[stride] = output
+                continue
+            if output.ndim >= 3:
+                last_dim = output.shape[-1]
+                channel_dim = output.shape[1] if output.ndim == 4 else last_dim
+                if last_dim == 4 or channel_dim == 4:
+                    bboxes_map[stride] = output
+                elif last_dim == 10 or channel_dim == 10:
+                    kps_map[stride] = output
+                else:
+                    scores_map[stride] = output
+            else:
+                scores_map[stride] = output
+        return scores_map, bboxes_map, kps_map
 
     def _decode(
         self,
         outputs: Iterable[np.ndarray],
         scale_x: float,
         scale_y: float,
+        pad_x: int,
+        pad_y: int,
         frame: np.ndarray,
     ) -> list[FaceBox]:
         outputs_list = list(outputs)
         if not outputs_list:
+            self._last_error = "SCRFD returned no outputs."
+            logger.debug("SCRFD decode skipped: no outputs")
             return []
-        use_kps = len(outputs_list) >= 9
-        stride_count = len(outputs_list) // (3 if use_kps else 2)
-        scores_list = outputs_list[:stride_count]
-        bboxes_list = outputs_list[stride_count : stride_count * 2]
-        kps_list = outputs_list[stride_count * 2 : stride_count * 3] if use_kps else []
+        scores_map, bboxes_map, kps_map = self._split_outputs(outputs_list)
+        use_kps = bool(kps_map)
 
         all_boxes: list[np.ndarray] = []
         all_scores: list[np.ndarray] = []
@@ -142,30 +242,53 @@ class ScrfdDetector:
 
         input_w, input_h = self.input_shape
 
-        for idx, stride in enumerate(self._feat_strides[:stride_count]):
-            scores = scores_list[idx]
-            bboxes = bboxes_list[idx]
+        for stride in self._feat_strides:
+            scores = scores_map.get(stride)
+            bboxes = bboxes_map.get(stride)
+            if scores is None or bboxes is None:
+                logger.debug("SCRFD stride %s missing scores or bboxes", stride)
+                continue
             feat_h = int(input_h / stride)
             feat_w = int(input_w / stride)
-            num_anchors = self._infer_num_anchors(scores, feat_h, feat_w)
+            scores = self._score_from_tensor(scores, feat_h, feat_w)
+            bboxes = self._bbox_from_tensor(bboxes, feat_h, feat_w)
+            kps = None
+            if use_kps and stride in kps_map:
+                kps = self._kps_from_tensor(kps_map[stride], feat_h, feat_w)
 
-            scores = scores.reshape(-1)
-            bboxes = bboxes.reshape((-1, 4))
-            kps = kps_list[idx].reshape((-1, 10)) if use_kps else None
-
-            num_anchors = max(int(scores.size // (feat_h * feat_w)), 1)
             anchor_centers = np.stack(np.mgrid[:feat_h, :feat_w], axis=-1).astype(np.float32)
             anchor_centers = anchor_centers * stride
             anchor_centers = anchor_centers.reshape((-1, 2))
+            if anchor_centers.shape[0] == 0:
+                logger.debug("SCRFD stride %s has zero anchor centers", stride)
+                continue
+            if scores.size % anchor_centers.shape[0] != 0:
+                logger.debug(
+                    "SCRFD stride %s score count mismatch: scores=%s centers=%s",
+                    stride,
+                    scores.size,
+                    anchor_centers.shape[0],
+                )
+                continue
+            num_anchors = max(int(scores.size // anchor_centers.shape[0]), 1)
             if num_anchors > 1:
                 anchor_centers = np.repeat(anchor_centers, num_anchors, axis=0)
-            if anchor_centers.shape[0] != scores.size:
-                min_len = min(anchor_centers.shape[0], scores.size)
-                anchor_centers = anchor_centers[:min_len]
-                scores = scores[:min_len]
-                bboxes = bboxes[:min_len]
-                if use_kps and kps is not None:
-                    kps = kps[:min_len]
+            if bboxes.shape[0] != anchor_centers.shape[0]:
+                logger.debug(
+                    "SCRFD stride %s bbox count mismatch: bboxes=%s centers=%s",
+                    stride,
+                    bboxes.shape[0],
+                    anchor_centers.shape[0],
+                )
+                continue
+            if use_kps and kps is not None and kps.shape[0] != anchor_centers.shape[0]:
+                logger.debug(
+                    "SCRFD stride %s kps count mismatch: kps=%s centers=%s",
+                    stride,
+                    kps.shape[0],
+                    anchor_centers.shape[0],
+                )
+                continue
 
             pos_inds = np.where(scores >= self.score_thresh)[0]
             if pos_inds.size == 0:
@@ -176,6 +299,7 @@ class ScrfdDetector:
             if use_kps and kps is not None:
                 kps = kps[pos_inds]
 
+            bboxes = bboxes * stride
             x1 = centers[:, 0] - bboxes[:, 0]
             y1 = centers[:, 1] - bboxes[:, 1]
             x2 = centers[:, 0] + bboxes[:, 2]
@@ -185,10 +309,13 @@ class ScrfdDetector:
             all_scores.append(scores)
             if use_kps and kps is not None:
                 kps = kps.reshape((-1, 5, 2))
+                kps = kps * stride
                 kps = kps + centers[:, None, :]
                 all_kps.append(kps)
 
         if not all_boxes:
+            self._last_error = "SCRFD produced no detections after decoding."
+            logger.debug("SCRFD decode completed with zero faces")
             return []
 
         all_boxes_np = np.concatenate(all_boxes, axis=0)
@@ -202,18 +329,18 @@ class ScrfdDetector:
 
         faces: list[FaceBox] = []
         for idx, (box, score) in enumerate(zip(boxes_kept, scores_kept)):
-            x1 = int(max(0, box[0] * scale_x))
-            y1 = int(max(0, box[1] * scale_y))
-            x2 = int(min(frame.shape[1], box[2] * scale_x))
-            y2 = int(min(frame.shape[0], box[3] * scale_y))
+            x1 = int(max(0, (box[0] - pad_x) * scale_x))
+            y1 = int(max(0, (box[1] - pad_y) * scale_y))
+            x2 = int(min(frame.shape[1], (box[2] - pad_x) * scale_x))
+            y2 = int(min(frame.shape[0], (box[3] - pad_y) * scale_y))
             if x2 <= x1 or y2 <= y1:
                 continue
             face_crop = frame[y1:y2, x1:x2]
             landmarks = None
             if kps_kept is not None:
                 kps = kps_kept[idx].copy()
-                kps[:, 0] = kps[:, 0] * scale_x
-                kps[:, 1] = kps[:, 1] * scale_y
+                kps[:, 0] = (kps[:, 0] - pad_x) * scale_x
+                kps[:, 1] = (kps[:, 1] - pad_y) * scale_y
                 landmarks = kps
             faces.append(
                 FaceBox(
@@ -232,9 +359,23 @@ class ScrfdDetector:
         if self.session is None or self.input_name is None:
             return []
         try:
-            blob, scale_x, scale_y = self._prepare(frame_bgr)
+            blob, scale_x, scale_y, pad_x, pad_y = self._prepare(frame_bgr)
             outputs = self.session.run(None, {self.input_name: blob})
-            return self._decode(outputs, scale_x, scale_y, frame_bgr)
-        except Exception:
+            faces = self._decode(outputs, scale_x, scale_y, pad_x, pad_y, frame_bgr)
+            if faces:
+                self._last_error = None
+            return faces
+        except Exception as exc:
+            self._last_error = f"SCRFD inference failed: {exc}"
             logger.exception("SCRFD inference failed.")
             return []
+
+    def io_report(self) -> dict[str, object]:
+        return {
+            "backend": "onnx",
+            "input_name": self.input_name,
+            "input_shape": list(self.session.get_inputs()[0].shape) if self.session else None,
+            "output_names": self._output_names,
+            "output_shapes": [list(shape) for shape in self._output_shapes],
+            "provider": self.provider,
+        }
