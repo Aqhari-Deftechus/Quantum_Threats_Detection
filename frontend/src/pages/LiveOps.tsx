@@ -120,6 +120,9 @@ export default function LiveOps({ lastOverlay }: { lastOverlay: WsOverlay | null
 
   const visibleCameras = cameras.slice(0, 4);
   const overlayFaces = lastOverlay?.data?.faces ?? [];
+  const confirmedFaces = overlayFaces.filter(
+    (face) => face.label && face.label.trim().toLowerCase() !== 'unknown'
+  );
   const watchlistFaces = overlayFaces.filter((face) => face.label.toLowerCase().includes('watchlist'));
 
   const threatFeedItems = useMemo(() => {
@@ -252,7 +255,7 @@ export default function LiveOps({ lastOverlay }: { lastOverlay: WsOverlay | null
                   )}
                   {lastOverlay && lastOverlay.data.camera_id === camera.id && (
                     <div className="overlay-layer">
-                      {overlayFaces.map((face, index) => {
+                      {confirmedFaces.map((face, index) => {
                         const [x1, y1, x2, y2] = face.box;
                         const width = x2 - x1;
                         const height = y2 - y1;
