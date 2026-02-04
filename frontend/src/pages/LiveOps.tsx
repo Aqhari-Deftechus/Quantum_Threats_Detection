@@ -247,7 +247,7 @@ export default function LiveOps({ lastOverlay }: { lastOverlay: WsOverlay | null
                   {camera.enabled ? (
                     <img
                       className="video-feed"
-                      src={`http://localhost:8000/api/cameras/${camera.id}/mjpeg`}
+                      src={`/api/cameras/${camera.id}/mjpeg`}
                       alt={`Camera ${camera.id}`}
                     />
                   ) : (
@@ -412,7 +412,7 @@ export default function LiveOps({ lastOverlay }: { lastOverlay: WsOverlay | null
             <div className="fullscreen-body">
               <img
                 className="fullscreen-feed"
-                src={`http://localhost:8000/api/cameras/${fullscreenCameraId}/mjpeg`}
+                src={`/api/cameras/${fullscreenCameraId}/mjpeg`}
                 alt={`Camera ${fullscreenCameraId}`}
               />
             </div>
