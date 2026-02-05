@@ -27,12 +27,14 @@ class CameraWorker:
         camera_id: int,
         source: str,
         source_type: str,
+        decoder_mode: str,
         queue_maxsize: int,
         capture_fps: int,
     ) -> None:
         self.camera_id = camera_id
         self.source = source
         self.source_type = source_type
+        self.decoder_mode = decoder_mode
         self.queue_maxsize = queue_maxsize
         self.capture_fps = capture_fps
         self.queue: Deque[FramePacket] = deque(maxlen=queue_maxsize)
@@ -64,13 +66,41 @@ class CameraWorker:
     def _open_capture(self) -> cv2.VideoCapture:
         if self.source_type == "WEBCAM":
             return cv2.VideoCapture(int(self.source))
+        if self.decoder_mode == "ffmpeg":
+            ffmpeg_backend = getattr(cv2, "CAP_FFMPEG", None)
+            if ffmpeg_backend is None:
+                logger.warning("FFmpeg backend requested but not available; using default backend.")
+                return cv2.VideoCapture(self.source)
+            return cv2.VideoCapture(self.source, ffmpeg_backend)
         return cv2.VideoCapture(self.source)
 
+    def _configure_rtsp_timeouts(self, capture: cv2.VideoCapture) -> None:
+        open_timeout = getattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC", None)
+        read_timeout = getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None)
+        if open_timeout is None:
+            logger.warning("OpenCV RTSP open timeout property not available; continuing without it.")
+        else:
+            if not capture.set(open_timeout, 5000):
+                logger.warning("Failed to set RTSP open timeout; continuing without it.")
+        if read_timeout is None:
+            logger.warning("OpenCV RTSP read timeout property not available; continuing without it.")
+        else:
+            if not capture.set(read_timeout, 5000):
+                logger.warning("Failed to set RTSP read timeout; continuing without it.")
+
     def _run(self) -> None:
+        reconnect_threshold = 10
+        reconnect_delay_s = 1.5
+        consecutive_failures = 0
+        logger.info("Camera connect starting: camera_id=%s source_type=%s", self.camera_id, self.source_type)
         capture = self._open_capture()
+        if self.source_type == "RTSP":
+            self._configure_rtsp_timeouts(capture)
         if not capture.isOpened():
+            logger.warning("Camera connect failed: camera_id=%s", self.camera_id)
             self.status = "DOWN"
             return
+        logger.info("Camera connect success: camera_id=%s", self.camera_id)
         self.status = "LIVE"
         last_tick = time.time()
         frame_count = 0
@@ -88,9 +118,30 @@ class CameraWorker:
                         self.camera_id,
                     )
             if not ok:
+                consecutive_failures += 1
+                logger.warning(
+                    "Camera read failed: camera_id=%s failures=%s",
+                    self.camera_id,
+                    consecutive_failures,
+                )
                 self.status = "DEGRADED"
+                if consecutive_failures >= reconnect_threshold:
+                    logger.warning("Camera reconnecting: camera_id=%s", self.camera_id)
+                    capture.release()
+                    time.sleep(reconnect_delay_s)
+                    capture = self._open_capture()
+                    if self.source_type == "RTSP":
+                        self._configure_rtsp_timeouts(capture)
+                    if capture.isOpened():
+                        logger.info("Camera reconnect success: camera_id=%s", self.camera_id)
+                        self.status = "LIVE"
+                        consecutive_failures = 0
+                    else:
+                        logger.warning("Camera reconnect failed: camera_id=%s", self.camera_id)
+                        self.status = "DOWN"
                 time.sleep(0.1)
                 continue
+            consecutive_failures = 0
 
             now = time.time()
             if self.last_frame_time and (now - self.last_frame_time) < frame_interval:
