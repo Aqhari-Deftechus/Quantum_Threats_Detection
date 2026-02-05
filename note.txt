@@ -1,0 +1,5 @@
+(myenv) C:\Users\dusai\Desktop\Quantum_Threats_Detection>python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8010
+(myenv) C:\Users\dusai\Desktop\Quantum_Threats_Detection\frontend>npm run dev -- --host 127.0.0.1 --port 5173
+
+(myenv) C:\Users\dusai\Desktop\Quantum_Threats_Detection\frontend> curl -X DELETE http://127.0.0.1:8010/api/cameras/1
+{"status":"deleted"}

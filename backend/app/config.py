@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     inference_short_side: int = 720
     max_face_matches_per_cycle: int = 5
     embedding_cache_ttl_seconds: float = 1.0
+    match_iou_threshold: float = 0.4
+    min_face_area: int = 80 * 80
+    unknown_grace_seconds: float = 1.0
+    unknown_grace_margin: float = 0.03
+    diagnostics_mode: bool = False
+    diagnostics_log_every_n_frames: int = 30
 
     matcher_dimension: int = 128
     matcher_faiss_enabled: bool = True
