@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from ..config import get_settings
+from ..diagnostics import RollingMetric
 from ..scrfd_detector import FaceBox
 from .face_alignment import FaceAligner
 from .face_recognizer import ArcFaceRecognizer
@@ -42,6 +43,9 @@ class CachedMatch:
     name: str
     similarity: float
     updated_at: float
+    last_known_name: str
+    last_known_similarity: float
+    last_known_at: float
 
 
 class VisionService:
@@ -62,6 +66,19 @@ class VisionService:
         self._last_faces: dict[int, list[FaceResult]] = {}
         self._match_cache: dict[int, list["CachedMatch"]] = {}
         self._round_robin_index: dict[int, int] = {}
+        self._diagnostics_enabled = settings.diagnostics_mode
+        self._diagnostics_every_n = settings.diagnostics_log_every_n_frames
+        self._detect_embed_metric = RollingMetric()
+        self._match_metric = RollingMetric()
+        self._draw_metric = RollingMetric()
+        if self._diagnostics_enabled:
+            detector_provider = self.detector.status().provider
+            recognizer_provider = self.recognizer.status().provider
+            logger.info(
+                "Diagnostics: ONNXRuntime providers detector=%s recognizer=%s",
+                detector_provider,
+                recognizer_provider,
+            )
 
     def status(self) -> VisionStatus:
         scrfd_status = self.detector.status()
@@ -181,6 +198,7 @@ class VisionService:
 
     def analyze_frame(self, camera_id: int, frame_bgr: np.ndarray, force_detect: bool = False) -> list[FaceResult]:
         settings = get_settings()
+        detect_embed_start = time.perf_counter()
         counter = self._frame_counter.get(camera_id, 0) + 1
         self._frame_counter[camera_id] = counter
         if not force_detect and counter % max(settings.detect_every_n_frames, 1) != 0:
@@ -193,6 +211,14 @@ class VisionService:
         )
         faces = self.detector.detect(resized_frame)
         scaled_faces = [self._scale_face(face, scale_x, scale_y) for face in faces]
+        min_area = max(settings.min_face_area, 0)
+        filtered: list[tuple[FaceBox, FaceBox]] = []
+        for face, scaled_face in zip(faces, scaled_faces):
+            width = max(0, scaled_face.x2 - scaled_face.x1)
+            height = max(0, scaled_face.y2 - scaled_face.y1)
+            if width * height < min_area:
+                continue
+            filtered.append((face, scaled_face))
         results: list[FaceResult] = []
         now = time.time()
         cache = self._match_cache.get(camera_id, [])
@@ -203,8 +229,12 @@ class VisionService:
         cached_results: dict[int, tuple[str, float]] = {}
         cache_indices: dict[int, int | None] = {}
 
-        for idx, face in enumerate(scaled_faces):
-            cache_idx, entry = self._find_cached_match(cache, [face.x1, face.y1, face.x2, face.y2], 0.5)
+        for idx, (_, face) in enumerate(filtered):
+            cache_idx, entry = self._find_cached_match(
+                cache,
+                [face.x1, face.y1, face.x2, face.y2],
+                settings.match_iou_threshold,
+            )
             cache_indices[idx] = cache_idx
             if entry and (now - entry.updated_at) <= ttl:
                 cached_results[idx] = (entry.name, entry.similarity)
@@ -212,7 +242,7 @@ class VisionService:
                 needs_match.append(idx)
 
         max_matches = max(settings.max_face_matches_per_cycle, 1)
-        sorted_indices = sorted(needs_match, key=lambda i: scaled_faces[i].score, reverse=True)
+        sorted_indices = sorted(needs_match, key=lambda i: filtered[i][1].score, reverse=True)
         if sorted_indices and len(sorted_indices) > max_matches:
             start = self._round_robin_index.get(camera_id, 0) % len(sorted_indices)
             selected = [sorted_indices[(start + offset) % len(sorted_indices)] for offset in range(max_matches)]
@@ -221,29 +251,72 @@ class VisionService:
             selected = sorted_indices
 
         selected_set = set(selected)
-        for idx, face in enumerate(scaled_faces):
+        match_total = 0.0
+        for idx, (_, face) in enumerate(filtered):
             name = "Unknown"
             similarity = 0.0
+            best_name = "Unknown"
+            best_score = 0.0
             if idx in cached_results:
                 name, similarity = cached_results[idx]
+                cache_idx = cache_indices.get(idx)
+                if cache_idx is not None:
+                    cache_entry = cache[cache_idx]
+                    cache_entry.updated_at = now
+                    if name != "Unknown":
+                        cache_entry.last_known_at = now
             elif idx in selected_set:
-                detected_face = faces[idx]
+                detected_face = filtered[idx][0]
                 if detected_face.landmarks is not None and self.recognizer.session is not None:
                     aligned = self.aligner.align(resized_frame, detected_face.landmarks)
                     if aligned is not None:
                         embedding = self.recognizer.embed(aligned.aligned)
                         if embedding is not None:
-                            name, similarity = self.watchlist.match(embedding)
-                            if name != "Unknown":
+                            match_start = time.perf_counter()
+                            best_name, best_score = self.watchlist.best_match(embedding)
+                            match_total += time.perf_counter() - match_start
+                            if best_score >= settings.watchlist_match_threshold:
+                                name, similarity = best_name, best_score
                                 logger.info("Recognition: %s (%.2f)", name, similarity)
+                            else:
+                                name, similarity = "Unknown", best_score
                 cache_entry = CachedMatch(
                     box=[face.x1, face.y1, face.x2, face.y2],
                     name=name,
                     similarity=similarity,
                     updated_at=now,
+                    last_known_name="Unknown",
+                    last_known_similarity=0.0,
+                    last_known_at=0.0,
                 )
+                if name != "Unknown":
+                    cache_entry.last_known_name = name
+                    cache_entry.last_known_similarity = similarity
+                    cache_entry.last_known_at = now
                 cache_idx = cache_indices.get(idx)
                 if cache_idx is not None:
+                    previous = cache[cache_idx]
+                    if previous.name != "Unknown" and name == "Unknown":
+                        if self._diagnostics_enabled:
+                            logger.info(
+                                "Diagnostics: known_to_unknown score=%.3f best_match=%s threshold=%.3f camera_id=%s",
+                                similarity,
+                                best_name,
+                                settings.watchlist_match_threshold,
+                                camera_id,
+                            )
+                        grace = max(settings.unknown_grace_seconds, 0.0)
+                        margin = max(settings.unknown_grace_margin, 0.0)
+                        if now - previous.last_known_at <= grace and similarity >= (
+                            settings.watchlist_match_threshold - margin
+                        ):
+                            name = previous.last_known_name
+                            similarity = previous.last_known_similarity
+                            cache_entry.name = name
+                            cache_entry.similarity = similarity
+                            cache_entry.last_known_name = previous.last_known_name
+                            cache_entry.last_known_similarity = previous.last_known_similarity
+                            cache_entry.last_known_at = previous.last_known_at
                     cache[cache_idx] = cache_entry
                 else:
                     cache.append(cache_entry)
@@ -254,9 +327,22 @@ class VisionService:
 
         self._match_cache[camera_id] = cache
         self._last_faces[camera_id] = results
+        detect_embed_total = time.perf_counter() - detect_embed_start
+        detect_embed_total = max(detect_embed_total - match_total, 0.0)
+        if self._diagnostics_enabled:
+            self._detect_embed_metric.update(detect_embed_total)
+            self._match_metric.update(match_total)
+            if self._detect_embed_metric.should_log(self._diagnostics_every_n):
+                logger.info(
+                    "Diagnostics: detect_embed_avg_ms=%.2f match_avg_ms=%.2f camera_id=%s",
+                    self._detect_embed_metric.average_ms(),
+                    self._match_metric.average_ms(),
+                    camera_id,
+                )
         return results
 
     def annotate(self, frame_bgr: np.ndarray, faces: list[FaceResult]) -> np.ndarray:
+        draw_start = time.perf_counter()
         annotated = frame_bgr.copy()
         for face in faces:
             x1, y1, x2, y2 = face.box
@@ -272,6 +358,14 @@ class VisionService:
                 1,
                 cv2.LINE_AA,
             )
+        draw_total = time.perf_counter() - draw_start
+        if self._diagnostics_enabled:
+            self._draw_metric.update(draw_total)
+            if self._draw_metric.should_log(self._diagnostics_every_n):
+                logger.info(
+                    "Diagnostics: draw_show_avg_ms=%.2f",
+                    self._draw_metric.average_ms(),
+                )
         return annotated
 
     def placeholder_frame(self, message: str = "NO SIGNAL") -> np.ndarray:

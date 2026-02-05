@@ -48,11 +48,15 @@ class WatchlistManager:
             self._load_error = "Models not ready for watchlist enrollment."
             logger.warning(self._load_error)
             return
+        image_patterns = ("*.jpg", "*.jpeg", "*.png", "*.bmp")
         for person_dir in sorted(self.watchlist_dir.iterdir()):
             if not person_dir.is_dir():
                 continue
             embeddings: list[np.ndarray] = []
-            for image_path in sorted(person_dir.glob("*.jpg")):
+            image_paths: list[Path] = []
+            for pattern in image_patterns:
+                image_paths.extend(person_dir.glob(pattern))
+            for image_path in sorted(image_paths):
                 image = cv2.imread(str(image_path))
                 if image is None:
                     logger.warning("Watchlist image unreadable: %s", image_path)
@@ -101,15 +105,18 @@ class WatchlistManager:
                 self.entries.append(WatchlistEntry(name=person_dir.name, embedding=centroid))
                 logger.info("Watchlist enrolled: %s (%d images)", person_dir.name, len(embeddings))
 
-    def match(self, embedding: np.ndarray) -> tuple[str, float]:
+    def best_match(self, embedding: np.ndarray) -> tuple[str, float]:
         if not self.entries:
             return "Unknown", 0.0
         scores = [float(np.dot(entry.embedding, embedding)) for entry in self.entries]
         best_idx = int(np.argmax(scores))
-        best_score = scores[best_idx]
+        return self.entries[best_idx].name, scores[best_idx]
+
+    def match(self, embedding: np.ndarray) -> tuple[str, float]:
+        best_name, best_score = self.best_match(embedding)
         if best_score < self.similarity_threshold:
             return "Unknown", best_score
-        return self.entries[best_idx].name, best_score
+        return best_name, best_score
 
     @property
     def load_error(self) -> str | None:

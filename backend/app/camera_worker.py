@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import deque
@@ -8,6 +9,11 @@ from typing import Deque, Optional
 
 import cv2
 import numpy as np
+
+from .config import get_settings
+from .diagnostics import RollingMetric
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class FramePacket:
@@ -38,6 +44,10 @@ class CameraWorker:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        settings = get_settings()
+        self._diagnostics_enabled = settings.diagnostics_mode
+        self._diagnostics_every_n = settings.diagnostics_log_every_n_frames
+        self._camera_read_metric = RollingMetric()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -66,7 +76,17 @@ class CameraWorker:
         frame_count = 0
         frame_interval = 1.0 / max(self.capture_fps, 1)
         while not self._stop_event.is_set():
+            read_start = time.perf_counter()
             ok, frame = capture.read()
+            read_end = time.perf_counter()
+            if self._diagnostics_enabled:
+                self._camera_read_metric.update(read_end - read_start)
+                if self._camera_read_metric.should_log(self._diagnostics_every_n):
+                    logger.info(
+                        "Diagnostics: camera_read_avg_ms=%.2f camera_id=%s",
+                        self._camera_read_metric.average_ms(),
+                        self.camera_id,
+                    )
             if not ok:
                 self.status = "DEGRADED"
                 time.sleep(0.1)
