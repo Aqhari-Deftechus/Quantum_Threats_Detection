@@ -123,6 +123,7 @@ class CameraRegistry:
                 camera_id=camera.id,
                 source=camera.source,
                 source_type=camera.source_type,
+                decoder_mode=camera.decoder_mode,
                 queue_maxsize=runtime.queue_maxsize,
                 capture_fps=get_settings().capture_fps,
             )
