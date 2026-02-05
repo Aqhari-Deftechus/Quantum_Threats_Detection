@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Route, Routes } from 'react-router-dom';
 import StatusStrip from './components/StatusStrip';
 import Nav from './components/Nav';
@@ -32,6 +32,9 @@ export type WsOverlay = {
 export default function App() {
   const [lastOverlay, setLastOverlay] = useState<WsOverlay | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
+  const lastUpdateRef = useRef(0);
+  const pendingPayloadRef = useRef<WsOverlay | null>(null);
+  const pendingTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -41,12 +44,36 @@ export default function App() {
     ws.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data) as WsOverlay;
-        setLastOverlay(payload);
+        const now = Date.now();
+        const elapsed = now - lastUpdateRef.current;
+        if (elapsed >= 100) {
+          lastUpdateRef.current = now;
+          setLastOverlay(payload);
+          return;
+        }
+        pendingPayloadRef.current = payload;
+        if (pendingTimerRef.current === null) {
+          const delay = Math.max(100 - elapsed, 0);
+          pendingTimerRef.current = window.setTimeout(() => {
+            pendingTimerRef.current = null;
+            if (pendingPayloadRef.current) {
+              lastUpdateRef.current = Date.now();
+              setLastOverlay(pendingPayloadRef.current);
+              pendingPayloadRef.current = null;
+            }
+          }, delay);
+        }
       } catch {
         setLastOverlay(null);
       }
     };
-    return () => ws.close();
+    return () => {
+      ws.close();
+      if (pendingTimerRef.current !== null) {
+        window.clearTimeout(pendingTimerRef.current);
+        pendingTimerRef.current = null;
+      }
+    };
   }, []);
 
   return (

@@ -31,7 +31,10 @@ class Settings(BaseSettings):
     scrfd_backend: str = "insightface"
     insightface_det_size: tuple[int, int] = (640, 640)
     detection_mode: str = "AUTO"
-    detect_every_n_frames: int = 4
+    detect_every_n_frames: int = 5
+    inference_short_side: int = 720
+    max_face_matches_per_cycle: int = 5
+    embedding_cache_ttl_seconds: float = 1.0
 
     matcher_dimension: int = 128
     matcher_faiss_enabled: bool = True
