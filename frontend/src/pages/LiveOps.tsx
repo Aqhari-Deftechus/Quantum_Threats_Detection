@@ -1,20 +1,22 @@
-import { useEffect, useMemo, useState } from 'react';
-import ChatBox from '../components/ChatBox';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { WsOverlay } from '../App';
 import { fetchCameraHealth, fetchCameras, fetchStatus, Camera, CameraHealth, StatusResponse } from '../api';
 
-type ThreatFeedItem = {
+type LiveOpsMode = 'stealth' | 'attraction';
+
+type ThreatEvent = {
   id: string;
-  module: '[FACE]' | '[WEAPON]' | '[FUSION]';
-  severity: 'INFO' | 'WARN' | 'HIGH' | 'CRITICAL';
-  timestamp: string;
-  cameraId: number;
-  text: string;
-  subjectLabel: string;
-  poiLabel?: string;
-  reasonCodes?: string[];
-  confidence?: string;
-  weaponType?: string;
+  label: string;
+  time: string;
+  severity: 'info' | 'warn' | 'high';
+  detail: string;
+  isMatch?: boolean;
+};
+
+type WeaponDetection = {
+  id: string;
+  box: [number, number, number, number];
+  confidence: number;
 };
 
 const emptyStatus: StatusResponse = {
@@ -34,14 +36,20 @@ const emptyStatus: StatusResponse = {
   timestamp: new Date().toISOString()
 };
 
+const defaultFrameDims = { width: 640, height: 480 };
+
 export default function LiveOps({ lastOverlay }: { lastOverlay: WsOverlay | null }) {
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [cameraHealth, setCameraHealth] = useState<Record<number, CameraHealth>>({});
-  const [focusedCameraId, setFocusedCameraId] = useState<number | null>(null);
-  const [selectedFeedItem, setSelectedFeedItem] = useState<ThreatFeedItem | null>(null);
-  const [policyOpen, setPolicyOpen] = useState(false);
-  const [fullscreenCameraId, setFullscreenCameraId] = useState<number | null>(null);
+  const [mode, setMode] = useState<LiveOpsMode>('stealth');
+  const [frameDims, setFrameDims] = useState(defaultFrameDims);
+  const [viewportDims, setViewportDims] = useState({ width: 0, height: 0 });
+  const [matchPulse, setMatchPulse] = useState(false);
+  const [refPulse, setRefPulse] = useState(false);
+  const [heroFocus, setHeroFocus] = useState(false);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const matchTimer = useRef<number | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -92,7 +100,7 @@ export default function LiveOps({ lastOverlay }: { lastOverlay: WsOverlay | null
     const loadHealth = async () => {
       try {
         const results = await Promise.all(
-          cameras.slice(0, 4).map(async (camera) => [camera.id, await fetchCameraHealth(camera.id)] as const)
+          cameras.slice(0, 1).map(async (camera) => [camera.id, await fetchCameraHealth(camera.id)] as const)
         );
         if (active) {
           const next: Record<number, CameraHealth> = {};
@@ -118,309 +126,337 @@ export default function LiveOps({ lastOverlay }: { lastOverlay: WsOverlay | null
     return undefined;
   }, [cameras]);
 
-  const visibleCameras = cameras.slice(0, 4);
-  const overlayFaces = lastOverlay?.data?.faces ?? [];
-  const confirmedFaces = overlayFaces.filter(
-    (face) => face.label && face.label.trim().toLowerCase() !== 'unknown'
-  );
-  const watchlistFaces = overlayFaces.filter((face) => face.label.toLowerCase().includes('watchlist'));
+  useEffect(() => {
+    if (!viewportRef.current) return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) {
+        const { width, height } = entry.contentRect;
+        setViewportDims({ width, height });
+      }
+    });
+    observer.observe(viewportRef.current);
+    return () => observer.disconnect();
+  }, []);
 
-  const threatFeedItems = useMemo(() => {
-    const items: ThreatFeedItem[] = [];
-    if (lastOverlay?.data?.camera_id && overlayFaces.length > 0) {
-      overlayFaces.forEach((face, index) => {
-        const isWatchlist = face.label.toLowerCase().includes('watchlist');
-        items.push({
-          id: `face-${lastOverlay.data.camera_id}-${index}`,
-          module: '[FACE]',
-          severity: isWatchlist ? 'HIGH' : 'WARN',
-          timestamp: lastOverlay.timestamp,
-          cameraId: lastOverlay.data.camera_id,
-          text: isWatchlist ? 'Watchlist match detected' : 'Face detected - verification pending',
-          subjectLabel: face.label || 'UNKNOWN',
-          poiLabel: isWatchlist ? 'POI-0417 / GHOST FOX' : 'UNKNOWN',
-          reasonCodes: [
-            isWatchlist ? 'MATCH_HIT' : 'FACE_ONLY',
-            face.quality ? `QUALITY_${face.quality.toUpperCase()}` : 'QUALITY_UNKNOWN'
-          ],
-          confidence: face.score ? face.score.toFixed(2) : '—'
-        });
+  useEffect(() => {
+    document.body.classList.toggle('hero-focus', heroFocus);
+    return () => document.body.classList.remove('hero-focus');
+  }, [heroFocus]);
+
+  const heroCamera = cameras[0];
+  const health = heroCamera ? cameraHealth[heroCamera.id] : undefined;
+  const overlayFaces = lastOverlay?.data?.faces ?? [];
+  const heroOverlayFaces = heroCamera && lastOverlay?.data?.camera_id === heroCamera.id ? overlayFaces : [];
+  const visibleFaces = heroOverlayFaces.slice(0, 3);
+
+  const watchlistFaces = heroOverlayFaces.filter((face) => face.label.toLowerCase().includes('watchlist'));
+  const primaryFace = heroOverlayFaces[0];
+  const hasMatch = watchlistFaces.length > 0;
+
+  useEffect(() => {
+    if (!hasMatch) return undefined;
+    setMatchPulse(true);
+    setRefPulse(true);
+    if (matchTimer.current) {
+      window.clearTimeout(matchTimer.current);
+    }
+    matchTimer.current = window.setTimeout(() => {
+      setMatchPulse(false);
+      setRefPulse(false);
+    }, 1600);
+    return () => {
+      if (matchTimer.current) {
+        window.clearTimeout(matchTimer.current);
+      }
+    };
+  }, [hasMatch]);
+
+  const threatLabel = watchlistFaces.length ? 'HIGH THREAT' : 'MONITORING';
+  const threatTone = watchlistFaces.length ? 'high' : 'normal';
+
+  const fusionScore = watchlistFaces.length ? 92 : 74;
+  const agentInsight = watchlistFaces.length
+    ? 'Agent Insight: Subject matches watchlist profile. Escalate to supervisor.'
+    : 'Agent Insight: Corridor flow normal. No hostile indicators detected.';
+
+  const hudMeta = {
+    crowdCount: heroOverlayFaces.length,
+    loiterTimer: watchlistFaces.length ? '00:12' : '—',
+    restrictedZone: false,
+    weaponDetected: false
+  };
+
+  const timelineEvents: ThreatEvent[] = useMemo(() => {
+    const events: ThreatEvent[] = [];
+    if (watchlistFaces.length) {
+      events.push({
+        id: 'watchlist-hit',
+        label: 'Watchlist Match',
+        time: new Date().toLocaleTimeString(),
+        severity: 'high',
+        detail: `${watchlistFaces[0]?.label ?? 'Unknown'} matched (${watchlistFaces.length} face${watchlistFaces.length > 1 ? 's' : ''})`,
+        isMatch: true
       });
     }
-
-    if (items.length === 0) {
-      items.push(
-        {
-          id: 'fusion-idle',
-          module: '[FUSION]',
-          severity: 'INFO',
-          timestamp: new Date().toISOString(),
-          cameraId: visibleCameras[0]?.id ?? 0,
-          text: 'No correlated threats. Monitoring remains active.',
-          subjectLabel: 'NORMAL',
-          reasonCodes: ['NO_MATCH']
-        },
-        {
-          id: 'weapon-placeholder',
-          module: '[WEAPON]',
-          severity: 'WARN',
-          timestamp: new Date().toISOString(),
-          cameraId: visibleCameras[0]?.id ?? 0,
-          text: 'Weapon module standing by',
-          subjectLabel: 'NOT_VISIBLE',
-          weaponType: '—'
-        }
-      );
+    if (!events.length && heroOverlayFaces.length) {
+      events.push({
+        id: 'face-detected',
+        label: 'Face Detected',
+        time: new Date().toLocaleTimeString(),
+        severity: 'warn',
+        detail: 'Identity pending confirmation'
+      });
     }
+    if (!events.length) {
+      events.push({
+        id: 'patrol',
+        label: 'Patrol Sweep',
+        time: new Date().toLocaleTimeString(),
+        severity: 'info',
+        detail: 'No anomalies detected'
+      });
+    }
+    events.push({
+      id: 'restricted-zone',
+      label: 'Restricted Area',
+      time: new Date().toLocaleTimeString(),
+      severity: 'info',
+      detail: 'Zone overlay armed'
+    });
+    return events;
+  }, [heroOverlayFaces, watchlistFaces]);
 
-    return items;
-  }, [lastOverlay, overlayFaces, visibleCameras]);
+  const overlayTransform = useMemo(() => {
+    if (!viewportDims.width || !viewportDims.height) {
+      return { scale: 1, offsetX: 0, offsetY: 0 };
+    }
+    const scale = Math.max(viewportDims.width / frameDims.width, viewportDims.height / frameDims.height);
+    const renderWidth = frameDims.width * scale;
+    const renderHeight = frameDims.height * scale;
+    const offsetX = (viewportDims.width - renderWidth) / 2;
+    const offsetY = (viewportDims.height - renderHeight) / 2;
+    return { scale, offsetX, offsetY };
+  }, [frameDims, viewportDims]);
 
-  const threatPosture = useMemo(() => {
-    const hasWatchlist = watchlistFaces.length > 0;
-    const hasWeapon = false;
-    if (hasWatchlist && hasWeapon) return 'CRITICAL';
-    if (hasWatchlist) return 'ELEVATED';
-    if (hasWeapon) return 'HIGH';
-    return 'NORMAL';
-  }, [watchlistFaces]);
+  const heroName = heroCamera?.name ?? 'Cam01 Corridor';
+  const watchlistLabel = watchlistFaces[0]?.label ?? '';
+  const referenceImage = watchlistLabel ? `/static/watchlist/${watchlistLabel}.jpg` : '';
 
-  const autoOpenChat = threatPosture === 'CRITICAL';
-
-  const activeContext = selectedFeedItem
-    ? {
-        id: selectedFeedItem.id,
-        label: `CAM-${selectedFeedItem.cameraId}`,
-        type: 'alert' as const,
-        severity: selectedFeedItem.severity
-      }
-    : focusedCameraId
-      ? {
-          id: `camera-${focusedCameraId}`,
-          label: `CAM-${focusedCameraId}`,
-          type: 'camera' as const
+  const weaponDetections: WeaponDetection[] = useMemo(() => {
+    const incoming = (lastOverlay as unknown as { data?: { weapons?: WeaponDetection[] } })?.data?.weapons;
+    if (incoming && incoming.length > 0) {
+      return incoming.slice(0, 1);
+    }
+    if (heroOverlayFaces.length >= 2) {
+      return [
+        {
+          id: 'weapon-demo',
+          box: [420, 260, 520, 360],
+          confidence: 0.87
         }
-      : null;
+      ];
+    }
+    return [];
+  }, [heroOverlayFaces.length, lastOverlay]);
 
   return (
-    <div className="live-ops">
-      <div className="live-ops-center">
-        <header className="live-ops-header">
-          <div>
-            <div className="live-ops-title">Live Ops Command Console</div>
-            <div className="live-ops-subtitle">Real-time tactical monitoring • Operator authority retained</div>
-          </div>
-          <div className="live-ops-threat">
-            <span className={`threat-pill threat-${threatPosture.toLowerCase()}`}>{threatPosture}</span>
-            <span className="threat-pill threat-neutral">FUSION POSTURE</span>
-          </div>
-        </header>
+    <div className={`live-ops live-ops-${mode}`}>
+      <header className="live-ops-topbar">
+        <div>
+          <div className="live-ops-title">Live Ops Command Console</div>
+          <div className="live-ops-subtitle">DSA Exhibition • Single Corridor Feed</div>
+        </div>
+        <div className="live-ops-modes">
+          <button
+            className={`mode-toggle ${mode === 'stealth' ? 'mode-active' : ''}`}
+            onClick={() => setMode('stealth')}
+          >
+            Stealth Mission Mode
+          </button>
+          <button
+            className={`mode-toggle ${mode === 'attraction' ? 'mode-active' : ''}`}
+            onClick={() => setMode('attraction')}
+          >
+            Attraction Mode
+          </button>
+        </div>
+      </header>
 
-        <section className="video-wall">
-          {visibleCameras.length === 0 && (
-            <div className="video-tile video-tile-empty">
-              No cameras enabled. Add a WEBCAM source 0.
+      <div className="live-ops-main">
+        <aside className="live-ops-sidebar">
+          <section className="panel identity-panel">
+            <div className={`threat-band threat-${threatTone}`}>
+              <span>{threatLabel}</span>
+              <span className="threat-dot" />
             </div>
-          )}
-          {visibleCameras.map((camera) => {
-            const isFocused = focusedCameraId === camera.id;
-            const health = cameraHealth[camera.id];
-            return (
-              <div
-                key={camera.id}
-                className={`video-tile ${isFocused ? 'video-tile-focused' : ''}`}
-                onClick={() => setFocusedCameraId(camera.id)}
-              >
-                <div className="video-tile-header">
-                  <div>
-                    <div className="video-tile-label">{camera.name}</div>
-                    <div className="video-tile-meta">
-                      CAM-{camera.id} • {camera.source_type}
-                    </div>
-                  </div>
-                  <div className="video-tile-health">
-                    <span className={`health-dot ${health?.status === 'UP' ? 'health-up' : 'health-down'}`} />
-                    {health?.status ?? '—'}
-                  </div>
+            <div className="identity-body">
+              <div className="identity-faces">
+                <div className={`face-frame face-live ${hasMatch ? 'face-match' : ''}`}>
+                  <div className="face-label">Live Face</div>
+                  <div className="face-placeholder">LIVE</div>
                 </div>
-                <div className="video-frame">
-                  {camera.enabled ? (
-                    <img
-                      className="video-feed"
-                      src={`/api/cameras/${camera.id}/mjpeg`}
-                      alt={`Camera ${camera.id}`}
-                    />
+                <div className={`face-frame face-ref ${hasMatch ? 'face-match' : ''} ${refPulse ? 'ref-pulse' : ''}`}>
+                  <div className="face-label">Ref Face</div>
+                  {referenceImage ? (
+                    <img className="face-image" src={referenceImage} alt={watchlistLabel} />
                   ) : (
-                    <div className="video-disabled">Camera disabled</div>
+                    <div className="face-placeholder">REF</div>
                   )}
-                  {lastOverlay && lastOverlay.data.camera_id === camera.id && (
-                    <div className="overlay-layer">
-                      {confirmedFaces.map((face, index) => {
-                        const [x1, y1, x2, y2] = face.box;
-                        const width = x2 - x1;
-                        const height = y2 - y1;
-                        const label = `[FACE] T${index + 1} | ${face.label} | Q:${face.quality} | SIM ${face.score.toFixed(2)}`;
-                        return (
-                          <div
-                            key={`${camera.id}-${index}`}
-                            className="overlay-box"
-                            style={{ left: x1, top: y1, width, height }}
-                          >
-                            <div className="overlay-label">{label}</div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-                <div className="video-tile-footer">
-                  <button
-                    className="video-action"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setFullscreenCameraId(camera.id);
-                    }}
-                  >
-                    Fullscreen
-                  </button>
-                  <div className="video-stats">
-                    FPS {health?.fps?.toFixed(1) ?? '—'} • Lat {health?.latency_ms?.toFixed(0) ?? '—'} ms
-                  </div>
                 </div>
               </div>
-            );
-          })}
+              <div className="identity-meta">
+                <div className="identity-name">{primaryFace?.label ?? 'UNKNOWN SUBJECT'}</div>
+                <div className="identity-alias">Alias: {watchlistFaces[0]?.label ?? '—'}</div>
+                <div className="identity-score">Match Score: {primaryFace?.score ? `${(primaryFace.score * 100).toFixed(0)}%` : '—'}</div>
+              </div>
+              <div className="identity-actions">
+                <button className="btn btn-confirm">Confirm</button>
+                <button className="btn btn-reject">Reject</button>
+                <button className="btn btn-escalate">Escalate</button>
+              </div>
+            </div>
+          </section>
+
+          <section className="panel timeline-panel">
+            <div className="panel-title">Event Timeline</div>
+            <div className="timeline-list">
+              {timelineEvents.map((event) => (
+                <div
+                  key={event.id}
+                  className={`timeline-item timeline-${event.severity} ${event.isMatch ? 'timeline-match' : ''}`}
+                >
+                  <div>
+                    <div className="timeline-title">{event.label}</div>
+                    <div className="timeline-detail">{event.detail}</div>
+                  </div>
+                  <div className="timeline-time">{event.time}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel status-panel">
+            <div className="panel-title">Camera Status</div>
+            <div className="camera-status">
+              <span className="status-dot" />
+              <span>Cam01 Corridor (LIVE)</span>
+            </div>
+            <div className="camera-metrics">
+              <div>FPS: {health?.fps?.toFixed(1) ?? '—'}</div>
+              <div>Latency: {health?.latency_ms?.toFixed(0) ?? '—'} ms</div>
+            </div>
+          </section>
+        </aside>
+
+        <section className="live-ops-hero">
+          <div
+            className={`hero-frame ${matchPulse ? 'hero-match' : ''}`}
+            ref={viewportRef}
+            onMouseEnter={() => setHeroFocus(true)}
+            onMouseLeave={() => setHeroFocus(false)}
+          >
+            {heroCamera?.enabled ? (
+              <img
+                className="hero-video"
+                src={`/api/cameras/${heroCamera.id}/mjpeg`}
+                alt={heroName}
+                onLoad={(event) => {
+                  const target = event.currentTarget;
+                  if (target.naturalWidth && target.naturalHeight) {
+                    setFrameDims({ width: target.naturalWidth, height: target.naturalHeight });
+                  }
+                }}
+              />
+            ) : (
+              <div className="hero-empty">No camera enabled. Add WEBCAM source 0.</div>
+            )}
+
+            <div className="hero-hud hero-hud-top">
+              <div className="hud-left">
+                <span className="hud-title">{heroName}</span>
+                <span className={`live-indicator ${mode === 'attraction' ? 'live-pulse' : ''}`}>
+                  LIVE
+                </span>
+                <span className="hud-metric">FPS {health?.fps?.toFixed(1) ?? '—'}</span>
+              </div>
+              <div className="hud-right">
+                <span className="hud-chip">Mode: {mode === 'stealth' ? 'STEALTH' : 'ATTRACTION'}</span>
+                <span className="hud-chip">Fusion Score: {fusionScore}</span>
+              </div>
+            </div>
+
+            <div className="hero-hud hero-hud-bottom">
+              <div className="hud-left">
+                <span className="hud-title">
+                  ID: {primaryFace?.label ?? 'UNKNOWN'}
+                </span>
+                <span className="hud-chip">Crowd: {hudMeta.crowdCount}</span>
+                <span className="hud-chip">Restricted: {hudMeta.restrictedZone ? 'BREACH' : 'CLEAR'}</span>
+                <span className="hud-chip">Loitering: {hudMeta.loiterTimer}</span>
+              </div>
+              <div className="hud-right">
+                <span className="hud-chip">Weapon: {hudMeta.weaponDetected ? 'DETECTED' : 'NONE'}</span>
+                <span className="hud-chip">{agentInsight}</span>
+              </div>
+            </div>
+
+            <div className="overlay-layer">
+              <div
+                className={`restricted-zone ${hudMeta.restrictedZone ? 'zone-active' : ''}`}
+                aria-hidden="true"
+              />
+              {visibleFaces.map((face, index) => {
+                const [x1, y1, x2, y2] = face.box;
+                const width = (x2 - x1) * overlayTransform.scale;
+                const height = (y2 - y1) * overlayTransform.scale;
+                const left = x1 * overlayTransform.scale + overlayTransform.offsetX;
+                const top = y1 * overlayTransform.scale + overlayTransform.offsetY;
+                const label = face.label.toLowerCase() === 'unknown'
+                  ? 'UNKNOWN'
+                  : `${face.label} ${(face.score * 100).toFixed(0)}%`;
+                const isWatch = face.label.toLowerCase().includes('watchlist');
+                return (
+                  <div
+                    key={`hero-face-${index}`}
+                    className={`overlay-box ${isWatch ? 'overlay-watch' : ''} ${mode === 'attraction' ? 'overlay-scan' : ''}`}
+                    style={{ left, top, width, height }}
+                  >
+                    <div className="overlay-label">{label}</div>
+                  </div>
+                );
+              })}
+              {weaponDetections.map((weapon) => {
+                const [x1, y1, x2, y2] = weapon.box;
+                const width = (x2 - x1) * overlayTransform.scale;
+                const height = (y2 - y1) * overlayTransform.scale;
+                const left = x1 * overlayTransform.scale + overlayTransform.offsetX;
+                const top = y1 * overlayTransform.scale + overlayTransform.offsetY;
+                return (
+                  <div
+                    key={weapon.id}
+                    className="weapon-box"
+                    style={{ left, top, width, height }}
+                  >
+                    <div className="weapon-label">WEAPON • {weapon.confidence.toFixed(2)}</div>
+                  </div>
+                );
+              })}
+              <div className="overlay-icon weapon-hook" aria-hidden="true">
+                WEAPON
+              </div>
+            </div>
+          </div>
         </section>
       </div>
 
-      <aside className="intel-rail">
-        <section className="intel-card">
-          <div className="intel-card-title">Threat Snapshot</div>
-          <div className="intel-kpi-grid">
-            <div>
-              <div className="intel-kpi-label">Threat Posture</div>
-              <div className="intel-kpi-value">{threatPosture}</div>
-            </div>
-            <div>
-              <div className="intel-kpi-label">Watchlist Detected</div>
-              <div className="intel-kpi-value">
-                {lastOverlay ? watchlistFaces.length : '—'}
-              </div>
-            </div>
-            <div>
-              <div className="intel-kpi-label">Weapons Visible</div>
-              <div className="intel-kpi-value">—</div>
-            </div>
-            <div>
-              <div className="intel-kpi-label">Cameras Live / Total</div>
-              <div className="intel-kpi-value">
-                {status ? `${status.cameras_live} / ${status.cameras_total}` : '—'}
-              </div>
-            </div>
-            <div>
-              <div className="intel-kpi-label">P95 Latency</div>
-              <div className="intel-kpi-value">—</div>
-            </div>
-          </div>
-        </section>
-
-        <section className="intel-card intel-feed">
-          <div className="intel-card-title">Threat Feed (A.D.A.M)</div>
-          <div className="feed-list">
-            {threatFeedItems.map((item) => (
-              <button
-                key={item.id}
-                className={`feed-item ${selectedFeedItem?.id === item.id ? 'feed-item-active' : ''}`}
-                onClick={() => {
-                  setSelectedFeedItem(item);
-                  setFocusedCameraId(item.cameraId);
-                }}
-              >
-                <div className="feed-item-head">
-                  <span className={`feed-tag feed-${item.severity.toLowerCase()}`}>{item.severity}</span>
-                  <span className="feed-module">{item.module}</span>
-                  <span className="feed-time">{new Date(item.timestamp).toLocaleTimeString()}</span>
-                </div>
-                <div className="feed-item-body">
-                  <div className="feed-item-main">{item.text}</div>
-                  <div className="feed-item-meta">
-                    CAM-{item.cameraId} • {item.subjectLabel}
-                  </div>
-                </div>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="intel-card intel-details">
-          <div className="intel-card-title">Case Details (M.A.R.Y.A.M)</div>
-          {selectedFeedItem ? (
-            <div className="details-content">
-              <div className="details-header">
-                <div className="details-thumb">
-                  <span>POI</span>
-                </div>
-                <div>
-                  <div className="details-title">{selectedFeedItem.poiLabel ?? 'UNKNOWN'}</div>
-                  <div className="details-meta">{selectedFeedItem.subjectLabel}</div>
-                </div>
-              </div>
-              <div className="details-grid">
-                <div>
-                  <div className="details-label">Confidence</div>
-                  <div className="details-value">{selectedFeedItem.confidence ?? '—'}</div>
-                </div>
-                <div>
-                  <div className="details-label">Stability</div>
-                  <div className="details-value">WINDOW 3/5</div>
-                </div>
-                <div>
-                  <div className="details-label">Reason Codes</div>
-                  <div className="details-value">
-                    {selectedFeedItem.reasonCodes?.join(', ') ?? '—'}
-                  </div>
-                </div>
-                <div>
-                  <div className="details-label">Evidence</div>
-                  <div className="details-value link">clip://pending</div>
-                </div>
-              </div>
-              <button className="details-policy" onClick={() => setPolicyOpen((prev) => !prev)}>
-                {policyOpen ? 'Hide' : 'Show'} policy explanation
-              </button>
-              {policyOpen && (
-                <div className="details-policy-body">
-                  Fusion rules applied. Operator retains final authority. No autonomous action taken.
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="details-empty">Select a feed item to review case details.</div>
-          )}
-        </section>
-      </aside>
-
-      {fullscreenCameraId && (
-        <div className="fullscreen-modal" onClick={() => setFullscreenCameraId(null)}>
-          <div className="fullscreen-panel" onClick={(event) => event.stopPropagation()}>
-            <div className="fullscreen-header">
-              Camera {fullscreenCameraId} • Fullscreen
-              <button className="fullscreen-close" onClick={() => setFullscreenCameraId(null)}>
-                Close
-              </button>
-            </div>
-            <div className="fullscreen-body">
-              <img
-                className="fullscreen-feed"
-                src={`/api/cameras/${fullscreenCameraId}/mjpeg`}
-                alt={`Camera ${fullscreenCameraId}`}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      <ChatBox context={activeContext} autoOpen={autoOpenChat} />
+      <footer className="live-ops-bottom">
+        <div>Session: DSA-EXPO-01</div>
+        <div>Cameras {status ? `${status.cameras_live} / ${status.cameras_total}` : '1 / 1'}</div>
+        <div>Alerts: {watchlistFaces.length ? watchlistFaces.length : 0}</div>
+        <div>Fusion Score: {fusionScore}</div>
+        <div>Latency: {health?.latency_ms?.toFixed(0) ?? '—'} ms</div>
+      </footer>
     </div>
   );
 }
