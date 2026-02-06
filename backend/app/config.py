@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     webrtc_video_codec: str = "H264"
     webrtc_fps: int = 12
     webrtc_resolution: str = "1280x720"
+    mediamtx_whep_base_url: str = "http://127.0.0.1:8889"
+    mediamtx_whep_path_template: str = "camera-{camera_id}"
 
     @property
     def clip_storage_dir_resolved(self) -> Path:

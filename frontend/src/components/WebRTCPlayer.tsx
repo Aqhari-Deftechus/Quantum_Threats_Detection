@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { fetchCameraPlayback } from '../api';
+import { MEDIAMTX_WHEP_BASE_URL, MEDIAMTX_WHEP_PATH_TEMPLATE } from '../config';
 
 type WebRTCPlayerProps = {
   cameraId: number;
@@ -18,6 +20,13 @@ export default function WebRTCPlayer({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const [state, setState] = useState<PlayerState>('idle');
+
+  const buildWhepUrl = (id: number) => {
+    const path = MEDIAMTX_WHEP_PATH_TEMPLATE
+      .replace('{camera_id}', String(id))
+      .replace('{cameraId}', String(id));
+    return `${MEDIAMTX_WHEP_BASE_URL}/${path.replace(/^\/+/, '').replace(/\/+$/, '')}/whep`;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -49,14 +58,33 @@ export default function WebRTCPlayer({
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
 
-      const response = await fetch('/api/webrtc/offer', {
+      const playback = await fetchCameraPlayback(cameraId);
+      const whepUrl = playback.whep_url || buildWhepUrl(cameraId);
+
+      if (!peer.localDescription) {
+        setState('failed');
+        return;
+      }
+
+      if (peer.iceGatheringState !== 'complete') {
+        await new Promise<void>((resolve) => {
+          const handleStateChange = () => {
+            if (peer.iceGatheringState === 'complete') {
+              peer.removeEventListener('icegatheringstatechange', handleStateChange);
+              resolve();
+            }
+          };
+          peer.addEventListener('icegatheringstatechange', handleStateChange);
+        });
+      }
+
+      const response = await fetch(whepUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          camera_id: cameraId,
-          sdp: offer.sdp,
-          type: offer.type
-        })
+        headers: {
+          'Content-Type': 'application/sdp',
+          Accept: 'application/sdp'
+        },
+        body: peer.localDescription.sdp
       });
 
       if (!response.ok) {
@@ -64,8 +92,13 @@ export default function WebRTCPlayer({
         return;
       }
 
-      const data = (await response.json()) as { sdp: string; type: RTCSdpType };
-      await peer.setRemoteDescription(new RTCSessionDescription(data));
+      const answerSdp = await response.text();
+      await peer.setRemoteDescription(
+        new RTCSessionDescription({
+          type: 'answer',
+          sdp: answerSdp
+        })
+      );
       if (!cancelled) {
         setState('connected');
       }

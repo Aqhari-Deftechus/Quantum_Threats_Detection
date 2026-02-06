@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..audit import create_audit_event
 from ..camera_registry import CameraRuntime
+from ..config import get_settings
 from ..db import get_session
 from ..models import Camera
 from ..schemas import (
@@ -18,6 +19,7 @@ from ..schemas import (
     CameraUpdate,
     CameraAnalysisResponse,
     FaceDetectionOut,
+    WebRTCPlaybackResponse,
 )
 from ..state import analysis_store, camera_registry
 from ..utils import redact_rtsp
@@ -31,6 +33,17 @@ def _camera_status(runtime: CameraRuntime | None, enabled: bool) -> str:
     if runtime is None:
         return "DOWN"
     return runtime.status
+
+
+def _build_whep_url(camera: Camera) -> str:
+    settings = get_settings()
+    base = settings.mediamtx_whep_base_url.rstrip("/")
+    path = settings.mediamtx_whep_path_template.format(
+        camera_id=camera.id,
+        camera_name=camera.name,
+    )
+    path = path.strip("/")
+    return f"{base}/{path}/whep"
 
 
 @router.get("", response_model=list[CameraOut])
@@ -178,6 +191,14 @@ def camera_health(camera_id: int, session: Session = Depends(get_session)) -> Ca
         queue_depth=runtime.queue_depth,
         latency_ms=runtime.latency_ms,
     )
+
+
+@router.get("/{camera_id}/webrtc-playback", response_model=WebRTCPlaybackResponse)
+def camera_webrtc_playback(camera_id: int, session: Session = Depends(get_session)) -> WebRTCPlaybackResponse:
+    camera = session.get(Camera, camera_id)
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    return WebRTCPlaybackResponse(protocol="whep", whep_url=_build_whep_url(camera))
 
 
 @router.get("/{camera_id}/analysis", response_model=CameraAnalysisResponse)

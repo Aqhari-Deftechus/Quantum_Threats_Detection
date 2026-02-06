@@ -142,3 +142,8 @@ class WebRTCOfferRequest(BaseModel):
 class WebRTCAnswerResponse(BaseModel):
     sdp: str
     type: str
+
+
+class WebRTCPlaybackResponse(BaseModel):
+    protocol: str
+    whep_url: str

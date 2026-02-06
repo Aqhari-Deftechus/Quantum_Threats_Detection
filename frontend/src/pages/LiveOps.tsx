@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { WsOverlay } from '../App';
 import WebRTCPlayer from '../components/WebRTCPlayer';
+import { API_BASE_URL } from '../config';
 import { fetchCameraHealth, fetchCameras, fetchStatus, Camera, CameraHealth, StatusResponse } from '../api';
 
 type LiveOpsMode = 'stealth' | 'attraction';
@@ -360,7 +361,7 @@ export default function LiveOps({ lastOverlay }: { lastOverlay: WsOverlay | null
             {heroCamera?.enabled ? (
               <WebRTCPlayer
                 cameraId={heroCamera.id}
-                fallbackSrc={`/api/cameras/${heroCamera.id}/mjpeg`}
+                fallbackSrc={`${API_BASE_URL}/api/cameras/${heroCamera.id}/mjpeg`}
                 className="hero-video"
                 onFrameDimensions={(width, height) => setFrameDims({ width, height })}
               />
