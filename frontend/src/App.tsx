@@ -7,6 +7,7 @@ import Events from './pages/Events';
 import Identities from './pages/Identities';
 import Cameras from './pages/Cameras';
 import Settings from './pages/Settings';
+import { WS_BASE_URL } from './config';
 
 export type WsOverlay = {
   version: string;
@@ -37,8 +38,7 @@ export default function App() {
   const pendingTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${wsProtocol}://${window.location.host}/ws`);
+    const ws = new WebSocket(`${WS_BASE_URL}/ws`);
     ws.onopen = () => setWsConnected(true);
     ws.onclose = () => setWsConnected(false);
     ws.onmessage = (event) => {

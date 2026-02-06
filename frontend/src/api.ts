@@ -1,4 +1,8 @@
-export const API_BASE = '/api';
+import { API_BASE_URL } from './config';
+
+const trimLeadingSlash = (value: string) => value.replace(/^\/+/, '');
+
+export const API_BASE = `${API_BASE_URL}/${trimLeadingSlash('api')}`;
 
 export type StatusResponse = {
   system: string;
@@ -107,5 +111,18 @@ export async function enrollIdentityEmbedding(identityId: number): Promise<Ident
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({})
   });
+  return response.json();
+}
+
+export type WebRTCPlaybackResponse = {
+  protocol: 'whep';
+  whep_url: string;
+};
+
+export async function fetchCameraPlayback(cameraId: number): Promise<WebRTCPlaybackResponse> {
+  const response = await fetch(`${API_BASE}/cameras/${cameraId}/webrtc-playback`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch WebRTC playback URL.');
+  }
   return response.json();
 }
