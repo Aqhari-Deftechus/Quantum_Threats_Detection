@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { WsOverlay } from '../App';
+import WebRTCPlayer from '../components/WebRTCPlayer';
 import { fetchCameraHealth, fetchCameras, fetchStatus, Camera, CameraHealth, StatusResponse } from '../api';
 
 type LiveOpsMode = 'stealth' | 'attraction';
@@ -357,16 +358,11 @@ export default function LiveOps({ lastOverlay }: { lastOverlay: WsOverlay | null
             onMouseLeave={() => setHeroFocus(false)}
           >
             {heroCamera?.enabled ? (
-              <img
+              <WebRTCPlayer
+                cameraId={heroCamera.id}
+                fallbackSrc={`/api/cameras/${heroCamera.id}/mjpeg`}
                 className="hero-video"
-                src={`/api/cameras/${heroCamera.id}/mjpeg`}
-                alt={heroName}
-                onLoad={(event) => {
-                  const target = event.currentTarget;
-                  if (target.naturalWidth && target.naturalHeight) {
-                    setFrameDims({ width: target.naturalWidth, height: target.naturalHeight });
-                  }
-                }}
+                onFrameDimensions={(width, height) => setFrameDims({ width, height })}
               />
             ) : (
               <div className="hero-empty">No camera enabled. Add WEBCAM source 0.</div>

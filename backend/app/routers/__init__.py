@@ -3,5 +3,13 @@ from .diagnostics import router as diagnostics_router
 from .health import router as health_router
 from .identities import router as identities_router
 from .streaming import router as streaming_router
+from .webrtc import router as webrtc_router
 
-__all__ = ["cameras_router", "diagnostics_router", "health_router", "identities_router", "streaming_router"]
+__all__ = [
+    "cameras_router",
+    "diagnostics_router",
+    "health_router",
+    "identities_router",
+    "streaming_router",
+    "webrtc_router",
+]

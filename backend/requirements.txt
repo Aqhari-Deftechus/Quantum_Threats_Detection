@@ -10,3 +10,10 @@ faiss-cpu
 python-dateutil
 opencv-python
 onnxruntime
+aiortc
+av
+insightface
+onnxruntime
+opencv-python
+numpy
+onnxruntime-gpu
