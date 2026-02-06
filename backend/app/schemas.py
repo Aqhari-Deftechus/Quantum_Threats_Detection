@@ -131,3 +131,14 @@ class IdentityOut(BaseModel):
 
 class EmbeddingEnrollRequest(BaseModel):
     embeddings: list[list[float]] | None = None
+
+
+class WebRTCOfferRequest(BaseModel):
+    camera_id: int
+    sdp: str
+    type: str = Field(pattern="^(offer)$")
+
+
+class WebRTCAnswerResponse(BaseModel):
+    sdp: str
+    type: str

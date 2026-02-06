@@ -47,6 +47,17 @@ class Settings(BaseSettings):
 
     retention_days: int = 30
 
+    webrtc_enabled: bool = True
+    webrtc_stun_urls: str = "stun:stun.l.google.com:19302"
+    webrtc_turn_url: str = ""
+    webrtc_turn_user: str = ""
+    webrtc_turn_pass: str = ""
+    webrtc_signalling_path: str = "/api/webrtc/offer"
+    webrtc_max_peers: int = 2
+    webrtc_video_codec: str = "H264"
+    webrtc_fps: int = 12
+    webrtc_resolution: str = "1280x720"
+
     @property
     def clip_storage_dir_resolved(self) -> Path:
         return self.clip_storage_dir.resolve()

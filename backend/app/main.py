@@ -14,7 +14,7 @@ from .config import get_settings
 from .db import Base, engine
 from .logging import setup_logging
 from .models import Camera, Identity, IdentityEmbedding
-from .routers import cameras_router, diagnostics_router, health_router, identities_router, streaming_router
+from .routers import cameras_router, diagnostics_router, health_router, identities_router, streaming_router, webrtc_router
 from .routers.debug import router as debug_router
 from .routers.vision import router as vision_router
 from .detection_service import run_detection_loop
@@ -68,6 +68,7 @@ app.include_router(cameras_router, prefix="/api")
 app.include_router(diagnostics_router, prefix="/api")
 app.include_router(identities_router, prefix="/api")
 app.include_router(streaming_router, prefix="/api")
+app.include_router(webrtc_router, prefix="/api")
 app.include_router(vision_router, prefix="/api")
 app.include_router(debug_router, prefix="/api")
 
@@ -82,13 +83,3 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
-
-
-@app.get("/api/webrtc/offer")
-async def webrtc_offer() -> dict[str, str]:
-    return {"status": "scaffold", "detail": "WebRTC offer endpoint placeholder"}
-
-
-@app.post("/api/webrtc/answer")
-async def webrtc_answer() -> dict[str, str]:
-    return {"status": "scaffold", "detail": "WebRTC answer endpoint placeholder"}
