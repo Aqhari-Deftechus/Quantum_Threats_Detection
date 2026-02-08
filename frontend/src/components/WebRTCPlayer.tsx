@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { fetchCameraPlayback } from '../api';
-import { MEDIAMTX_WHEP_BASE_URL, MEDIAMTX_WHEP_PATH_TEMPLATE } from '../config';
+import { ENABLE_WHEP, MEDIAMTX_WHEP_BASE_URL, MEDIAMTX_WHEP_PATH_TEMPLATE } from '../config';
 
 type WebRTCPlayerProps = {
   cameraId: number;
@@ -30,6 +30,11 @@ export default function WebRTCPlayer({
 
   useEffect(() => {
     let cancelled = false;
+
+    if (!ENABLE_WHEP) {
+      setState('idle');
+      return undefined;
+    }
 
     const connect = async () => {
       setState('connecting');

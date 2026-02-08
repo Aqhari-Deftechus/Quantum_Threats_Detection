@@ -1,16 +1,21 @@
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
 
+const parseBoolean = (value: string | undefined, fallback: boolean) => {
+  if (value === undefined) {
+    return fallback;
+  }
+  const normalized = value.trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(normalized);
+};
+
 const getDefaultApiBaseUrl = () => {
   if (import.meta.env.DEV) {
-    return 'http://127.0.0.1:8010';
+    return '';
   }
-  return window.location.origin;
+  return '';
 };
 
 const getDefaultWsBaseUrl = () => {
-  if (import.meta.env.DEV) {
-    return 'ws://127.0.0.1:8010';
-  }
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
   return `${protocol}://${window.location.host}`;
 };
@@ -29,3 +34,5 @@ export const MEDIAMTX_WHEP_BASE_URL = trimTrailingSlash(
 
 export const MEDIAMTX_WHEP_PATH_TEMPLATE =
   import.meta.env.VITE_MEDIAMTX_WHEP_PATH_TEMPLATE ?? 'camera-{camera_id}';
+
+export const ENABLE_WHEP = parseBoolean(import.meta.env.VITE_ENABLE_WHEP, false);
