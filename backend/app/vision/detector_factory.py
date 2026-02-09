@@ -27,7 +27,7 @@ def create_detector(settings: Settings) -> DetectorProtocol:
     if backend == "insightface":
         return InsightFaceDetector(
             score_thresh=settings.scrfd_score_threshold,
-            det_size=settings.insightface_det_size,
+            det_size=settings.active_det_size,
         )
     return ScrfdDetector(
         settings.scrfd_model_path,

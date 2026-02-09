@@ -15,6 +15,7 @@ from .diagnostics import RollingMetric
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class FramePacket:
     frame: bytes
@@ -64,9 +65,15 @@ class CameraWorker:
             self._thread.join(timeout=2)
 
     def _open_capture(self) -> cv2.VideoCapture:
+        settings = get_settings()
         if self.source_type == "WEBCAM":
             return cv2.VideoCapture(int(self.source))
-        if self.decoder_mode == "ffmpeg":
+
+        use_ffmpeg = self.decoder_mode == "ffmpeg"
+        if self.source_type == "RTSP" and settings.rtsp_prefer_ffmpeg:
+            use_ffmpeg = True
+
+        if use_ffmpeg:
             ffmpeg_backend = getattr(cv2, "CAP_FFMPEG", None)
             if ffmpeg_backend is None:
                 logger.warning("FFmpeg backend requested but not available; using default backend.")
@@ -75,6 +82,7 @@ class CameraWorker:
         return cv2.VideoCapture(self.source)
 
     def _configure_rtsp_timeouts(self, capture: cv2.VideoCapture) -> None:
+        settings = get_settings()
         open_timeout = getattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC", None)
         read_timeout = getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None)
         if open_timeout is None:
@@ -87,6 +95,27 @@ class CameraWorker:
         else:
             if not capture.set(read_timeout, 5000):
                 logger.warning("Failed to set RTSP read timeout; continuing without it.")
+
+        buffer_size_prop = getattr(cv2, "CAP_PROP_BUFFERSIZE", None)
+        if buffer_size_prop is not None:
+            buffer_size = max(1, int(settings.rtsp_buffer_size))
+            if not capture.set(buffer_size_prop, buffer_size):
+                logger.warning("Failed to set RTSP buffer size; continuing with backend default.")
+
+    def _drain_latest_frame(self, capture: cv2.VideoCapture, frame: np.ndarray) -> np.ndarray:
+        settings = get_settings()
+        if not settings.rtsp_read_latest_frame:
+            return frame
+        latest = frame
+        for _ in range(2):
+            grabbed = capture.grab()
+            if not grabbed:
+                break
+            ok, refreshed = capture.retrieve()
+            if not ok:
+                break
+            latest = refreshed
+        return latest
 
     def _run(self) -> None:
         reconnect_threshold = 10
@@ -142,6 +171,9 @@ class CameraWorker:
                 time.sleep(0.1)
                 continue
             consecutive_failures = 0
+
+            if self.source_type == "RTSP":
+                frame = self._drain_latest_frame(capture, frame)
 
             now = time.time()
             if self.last_frame_time and (now - self.last_frame_time) < frame_interval:

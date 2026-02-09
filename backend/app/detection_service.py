@@ -45,7 +45,7 @@ async def run_detection_loop(camera_registry: CameraRegistry, ws_manager: WebSoc
             frame_counters[runtime.camera_id] = frame_counters.get(runtime.camera_id, 0) + 1
             if settings.detection_mode == "MANUAL":
                 continue
-            if frame_counters[runtime.camera_id] % max(settings.detect_every_n_frames, 1) != 0:
+            if frame_counters[runtime.camera_id] % settings.active_detect_every_n != 0:
                 continue
 
             faces = []
