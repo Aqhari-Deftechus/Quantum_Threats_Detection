@@ -79,6 +79,20 @@ class VisionService:
                 detector_provider,
                 recognizer_provider,
             )
+        logger.info(
+            "ACTIVE_DET_SIZE=%sx%s ACTIVE_RESIZE_MODE=%s ACTIVE_MIN_FACE_AREA=%s ACTIVE_DETECT_EVERY_N=%s ACTIVE_MAX_MATCHES=%s",
+            settings.active_det_size[0],
+            settings.active_det_size[1],
+            settings.active_resize_mode,
+            settings.active_min_face_area,
+            settings.active_detect_every_n,
+            settings.active_max_face_matches,
+        )
+        if settings.active_min_face_area < settings.min_face_area_warn_threshold:
+            logger.warning(
+                "Very small face area is enabled (ACTIVE_MIN_FACE_AREA=%s). This increases recall for distant faces but may increase false positives and GPU/CPU load.",
+                settings.active_min_face_area,
+            )
 
     def status(self) -> VisionStatus:
         scrfd_status = self.detector.status()
@@ -131,8 +145,10 @@ class VisionService:
         )
 
     def _resize_for_inference(
-        self, frame_bgr: np.ndarray, short_side_target: int
+        self, frame_bgr: np.ndarray, short_side_target: int, resize_mode: str
     ) -> tuple[np.ndarray, float, float]:
+        if resize_mode == "off":
+            return frame_bgr, 1.0, 1.0
         if short_side_target <= 0:
             return frame_bgr, 1.0, 1.0
         src_h, src_w = frame_bgr.shape[:2]
@@ -201,17 +217,17 @@ class VisionService:
         detect_embed_start = time.perf_counter()
         counter = self._frame_counter.get(camera_id, 0) + 1
         self._frame_counter[camera_id] = counter
-        if not force_detect and counter % max(settings.detect_every_n_frames, 1) != 0:
+        if not force_detect and counter % settings.active_detect_every_n != 0:
             return self._last_faces.get(camera_id, [])
         if not self.detector.status().ready:
             self._last_error = self.detector.status().error
             return []
         resized_frame, scale_x, scale_y = self._resize_for_inference(
-            frame_bgr, settings.inference_short_side
+            frame_bgr, settings.inference_short_side, settings.active_resize_mode
         )
         faces = self.detector.detect(resized_frame)
         scaled_faces = [self._scale_face(face, scale_x, scale_y) for face in faces]
-        min_area = max(settings.min_face_area, 0)
+        min_area = settings.active_min_face_area
         filtered: list[tuple[FaceBox, FaceBox]] = []
         for face, scaled_face in zip(faces, scaled_faces):
             width = max(0, scaled_face.x2 - scaled_face.x1)
@@ -241,7 +257,7 @@ class VisionService:
             else:
                 needs_match.append(idx)
 
-        max_matches = max(settings.max_face_matches_per_cycle, 1)
+        max_matches = settings.active_max_face_matches
         sorted_indices = sorted(needs_match, key=lambda i: filtered[i][1].score, reverse=True)
         if sorted_indices and len(sorted_indices) > max_matches:
             start = self._round_robin_index.get(camera_id, 0) % len(sorted_indices)
