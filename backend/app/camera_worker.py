@@ -118,8 +118,9 @@ class CameraWorker:
         return latest
 
     def _run(self) -> None:
+        settings = get_settings()
         reconnect_threshold = 10
-        reconnect_delay_s = 1.5
+        reconnect_delay_s = max(0.1, float(settings.face_reconnect_wait_sec))
         consecutive_failures = 0
         logger.info("Camera connect starting: camera_id=%s source_type=%s", self.camera_id, self.source_type)
         capture = self._open_capture()
@@ -130,6 +131,9 @@ class CameraWorker:
             self.status = "DOWN"
             return
         logger.info("Camera connect success: camera_id=%s", self.camera_id)
+        flush_frames = max(0, int(settings.face_flush_frames_on_connect))
+        for _ in range(flush_frames):
+            capture.read()
         self.status = "LIVE"
         last_tick = time.time()
         frame_count = 0
@@ -138,6 +142,10 @@ class CameraWorker:
             read_start = time.perf_counter()
             ok, frame = capture.read()
             read_end = time.perf_counter()
+            timeout_s = max(1, int(settings.face_read_timeout_sec))
+            if (read_end - read_start) > float(timeout_s):
+                logger.warning("Camera read timeout exceeded: camera_id=%s elapsed=%.2fs", self.camera_id, read_end - read_start)
+                ok = False
             if self._diagnostics_enabled:
                 self._camera_read_metric.update(read_end - read_start)
                 if self._camera_read_metric.should_log(self._diagnostics_every_n):
@@ -163,6 +171,9 @@ class CameraWorker:
                         self._configure_rtsp_timeouts(capture)
                     if capture.isOpened():
                         logger.info("Camera reconnect success: camera_id=%s", self.camera_id)
+                        flush_frames = max(0, int(settings.face_flush_frames_on_connect))
+                        for _ in range(flush_frames):
+                            capture.read()
                         self.status = "LIVE"
                         consecutive_failures = 0
                     else:

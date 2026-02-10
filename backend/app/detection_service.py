@@ -30,7 +30,6 @@ def _overlay_payload(camera_id: int, faces: list[dict[str, Any]]) -> dict[str, A
 
 async def run_detection_loop(camera_registry: CameraRegistry, ws_manager: WebSocketManager) -> None:
     settings = get_settings()
-    frame_counters: dict[int, int] = {}
 
     while True:
         await asyncio.sleep(0.05)
@@ -41,11 +40,8 @@ async def run_detection_loop(camera_registry: CameraRegistry, ws_manager: WebSoc
             latest = runtime.worker.get_latest_bgr()
             if not latest:
                 continue
-            timestamp, frame = latest
-            frame_counters[runtime.camera_id] = frame_counters.get(runtime.camera_id, 0) + 1
+            _, frame = latest
             if settings.detection_mode == "MANUAL":
-                continue
-            if frame_counters[runtime.camera_id] % settings.active_detect_every_n != 0:
                 continue
 
             faces = []
