@@ -33,7 +33,7 @@ class IntegratedFaceEngine:
         self._error: str | None = None
         self._frame_counter: dict[int, int] = {}
         self._last_faces: dict[int, list[FaceRecord]] = {}
-        self._db = FaceDbStore(settings.face_dataset_dir, settings.face_db_cache_path_resolved)
+        self._db = FaceDbStore(settings.face_dataset_dir_resolved, settings.face_db_cache_path_resolved)
         self._init_app()
         if self._ready:
             cache_loaded = self._db.load_cache()

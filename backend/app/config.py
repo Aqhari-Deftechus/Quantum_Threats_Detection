@@ -1,14 +1,38 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+logger = logging.getLogger(__name__)
+
+APP_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = APP_DIR.parent
+REPO_ROOT = BACKEND_DIR.parent
+ROOT_ENV_FILE = REPO_ROOT / ".env"
+BACKEND_ENV_FILE = BACKEND_DIR / ".env"
+
+
+def _clean_env_path_value(raw: str) -> str:
+    value = raw.strip()
+    if value.lower().startswith('r"') and value.endswith('"'):
+        return value[2:-1]
+    if value.lower().startswith("r'") and value.endswith("'"):
+        return value[2:-1]
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    return value
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="QTD_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="QTD_",
+        env_file=(str(ROOT_ENV_FILE), str(BACKEND_ENV_FILE)),
+        extra="ignore",
+    )
 
     app_name: str = "Quantum Threats Detection"
     environment: str = "development"
@@ -123,6 +147,41 @@ class Settings(BaseSettings):
     def face_db_cache_path_resolved(self) -> Path:
         return self.face_db_cache_path.resolve()
 
+    @property
+    def face_dataset_dir_raw(self) -> str:
+        return str(self.face_dataset_dir)
+
+    @property
+    def face_dataset_dir_resolved(self) -> Path:
+        raw_text = _clean_env_path_value(str(self.face_dataset_dir))
+        candidate = Path(raw_text)
+        if candidate.is_absolute():
+            return candidate
+
+        cwd_candidate = (Path.cwd() / candidate).resolve()
+        if cwd_candidate.exists():
+            return cwd_candidate
+
+        root_candidate = (REPO_ROOT / candidate).resolve()
+        if root_candidate.exists():
+            return root_candidate
+
+        backend_candidate = (BACKEND_DIR / candidate).resolve()
+        if backend_candidate.exists():
+            return backend_candidate
+
+        return root_candidate
+
+    @property
+    def active_face_env_file(self) -> str:
+        if ROOT_ENV_FILE.exists() and BACKEND_ENV_FILE.exists():
+            return f"{ROOT_ENV_FILE} (base), {BACKEND_ENV_FILE} (override)"
+        if ROOT_ENV_FILE.exists():
+            return str(ROOT_ENV_FILE)
+        if BACKEND_ENV_FILE.exists():
+            return str(BACKEND_ENV_FILE)
+        return "none"
+
     def _parse_det_size(self, value: str) -> tuple[int, int]:
         try:
             clean = value.lower().replace(" ", "")
@@ -204,4 +263,12 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    logger.info(
+        "Active Face Settings | QTD_FACE_DATASET_DIR=%s | resolved_dataset_dir=%s | cwd=%s | env_file=%s",
+        settings.face_dataset_dir_raw,
+        settings.face_dataset_dir_resolved,
+        Path.cwd(),
+        settings.active_face_env_file,
+    )
+    return settings
