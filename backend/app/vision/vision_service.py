@@ -15,6 +15,7 @@ from .face_alignment import FaceAligner
 from .face_recognizer import ArcFaceRecognizer
 from .watchlist import WatchlistManager
 from .detector_factory import DetectorProtocol, create_detector
+from .face_engine import IntegratedFaceEngine, FaceRecord
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,9 @@ class CachedMatch:
 class VisionService:
     def __init__(self) -> None:
         settings = get_settings()
+        self.engine_mode = settings.face_engine_mode
+        self.integrated_engine = IntegratedFaceEngine(settings) if self.engine_mode == "integrated" else None
+
         self.detector: DetectorProtocol = create_detector(settings)
         self.recognizer = ArcFaceRecognizer(settings.arcface_model_path)
         self.aligner = FaceAligner()
@@ -61,40 +65,32 @@ class VisionService:
             self.aligner,
             settings.watchlist_match_threshold,
         )
+
         self._last_error: str | None = None
         self._frame_counter: dict[int, int] = {}
         self._last_faces: dict[int, list[FaceResult]] = {}
         self._match_cache: dict[int, list["CachedMatch"]] = {}
         self._round_robin_index: dict[int, int] = {}
+
         self._diagnostics_enabled = settings.diagnostics_mode
         self._diagnostics_every_n = settings.diagnostics_log_every_n_frames
         self._detect_embed_metric = RollingMetric()
         self._match_metric = RollingMetric()
         self._draw_metric = RollingMetric()
-        if self._diagnostics_enabled:
-            detector_provider = self.detector.status().provider
-            recognizer_provider = self.recognizer.status().provider
-            logger.info(
-                "Diagnostics: ONNXRuntime providers detector=%s recognizer=%s",
-                detector_provider,
-                recognizer_provider,
-            )
-        logger.info(
-            "ACTIVE_DET_SIZE=%sx%s ACTIVE_RESIZE_MODE=%s ACTIVE_MIN_FACE_AREA=%s ACTIVE_DETECT_EVERY_N=%s ACTIVE_MAX_MATCHES=%s",
-            settings.active_det_size[0],
-            settings.active_det_size[1],
-            settings.active_resize_mode,
-            settings.active_min_face_area,
-            settings.active_detect_every_n,
-            settings.active_max_face_matches,
-        )
-        if settings.active_min_face_area < settings.min_face_area_warn_threshold:
-            logger.warning(
-                "Very small face area is enabled (ACTIVE_MIN_FACE_AREA=%s). This increases recall for distant faces but may increase false positives and GPU/CPU load.",
-                settings.active_min_face_area,
-            )
+
+        logger.info("Face engine mode: %s", self.engine_mode)
 
     def status(self) -> VisionStatus:
+        if self.engine_mode == "integrated" and self.integrated_engine is not None:
+            provider = self.integrated_engine.provider
+            last_error = self.integrated_engine.error
+            return VisionStatus(
+                scrfd_ready=self.integrated_engine.ready,
+                arcface_ready=self.integrated_engine.ready,
+                provider=provider,
+                last_error=last_error,
+            )
+
         scrfd_status = self.detector.status()
         arcface_status = self.recognizer.status()
         provider = scrfd_status.provider if scrfd_status.provider != "UNKNOWN" else arcface_status.provider
@@ -107,6 +103,26 @@ class VisionService:
         )
 
     def model_report(self) -> dict[str, Any]:
+        if self.engine_mode == "integrated" and self.integrated_engine is not None:
+            return {
+                "provider": self.integrated_engine.provider,
+                "scrfd": {
+                    "ready": self.integrated_engine.ready,
+                    "error": self.integrated_engine.error,
+                    "path": "insightface/buffalo_l",
+                    "size_bytes": 0,
+                    "is_lfs_pointer": False,
+                },
+                "arcface": {
+                    "ready": self.integrated_engine.ready,
+                    "error": self.integrated_engine.error,
+                    "path": "insightface/buffalo_l",
+                    "size_bytes": 0,
+                    "is_lfs_pointer": False,
+                },
+                "watchlist_error": None,
+            }
+
         scrfd_status = self.detector.status()
         arcface_status = self.recognizer.status()
         return {
@@ -129,7 +145,27 @@ class VisionService:
         }
 
     def scrfd_io_report(self) -> dict[str, object]:
+        if self.engine_mode == "integrated":
+            settings = get_settings()
+            return {
+                "backend": "insightface-integrated",
+                "model_name": settings.face_model_name,
+                "det_size": list(settings.face_active_det_size),
+                "provider": self.integrated_engine.provider if self.integrated_engine else "UNKNOWN",
+                "ready": self.integrated_engine.ready if self.integrated_engine else False,
+                "error": self.integrated_engine.error if self.integrated_engine else "Engine unavailable",
+            }
         return self.detector.io_report()
+
+    def _integrated_to_result(self, record: FaceRecord) -> FaceResult:
+        return FaceResult(
+            box=record.box,
+            score=record.score,
+            label=record.label,
+            similarity=record.similarity,
+            quality=record.quality,
+            landmarks=record.landmarks,
+        )
 
     def _face_to_result(self, face: FaceBox, name: str, similarity: float) -> FaceResult:
         landmarks = None
@@ -212,7 +248,7 @@ class VisionService:
                 best_score = score
         return best_idx, best_match
 
-    def analyze_frame(self, camera_id: int, frame_bgr: np.ndarray, force_detect: bool = False) -> list[FaceResult]:
+    def _analyze_legacy(self, camera_id: int, frame_bgr: np.ndarray, force_detect: bool = False) -> list[FaceResult]:
         settings = get_settings()
         detect_embed_start = time.perf_counter()
         counter = self._frame_counter.get(camera_id, 0) + 1
@@ -271,8 +307,6 @@ class VisionService:
         for idx, (_, face) in enumerate(filtered):
             name = "Unknown"
             similarity = 0.0
-            best_name = "Unknown"
-            best_score = 0.0
             if idx in cached_results:
                 name, similarity = cached_results[idx]
                 cache_idx = cache_indices.get(idx)
@@ -293,7 +327,6 @@ class VisionService:
                             match_total += time.perf_counter() - match_start
                             if best_score >= settings.watchlist_match_threshold:
                                 name, similarity = best_name, best_score
-                                logger.info("Recognition: %s (%.2f)", name, similarity)
                             else:
                                 name, similarity = "Unknown", best_score
                 cache_entry = CachedMatch(
@@ -311,28 +344,6 @@ class VisionService:
                     cache_entry.last_known_at = now
                 cache_idx = cache_indices.get(idx)
                 if cache_idx is not None:
-                    previous = cache[cache_idx]
-                    if previous.name != "Unknown" and name == "Unknown":
-                        if self._diagnostics_enabled:
-                            logger.info(
-                                "Diagnostics: known_to_unknown score=%.3f best_match=%s threshold=%.3f camera_id=%s",
-                                similarity,
-                                best_name,
-                                settings.watchlist_match_threshold,
-                                camera_id,
-                            )
-                        grace = max(settings.unknown_grace_seconds, 0.0)
-                        margin = max(settings.unknown_grace_margin, 0.0)
-                        if now - previous.last_known_at <= grace and similarity >= (
-                            settings.watchlist_match_threshold - margin
-                        ):
-                            name = previous.last_known_name
-                            similarity = previous.last_known_similarity
-                            cache_entry.name = name
-                            cache_entry.similarity = similarity
-                            cache_entry.last_known_name = previous.last_known_name
-                            cache_entry.last_known_similarity = previous.last_known_similarity
-                            cache_entry.last_known_at = previous.last_known_at
                     cache[cache_idx] = cache_entry
                 else:
                     cache.append(cache_entry)
@@ -357,6 +368,14 @@ class VisionService:
                 )
         return results
 
+    def analyze_frame(self, camera_id: int, frame_bgr: np.ndarray, force_detect: bool = False) -> list[FaceResult]:
+        if self.engine_mode == "integrated" and self.integrated_engine is not None:
+            records = self.integrated_engine.analyze_frame(camera_id, frame_bgr, force_detect=force_detect)
+            results = [self._integrated_to_result(record) for record in records]
+            self._last_faces[camera_id] = results
+            return results
+        return self._analyze_legacy(camera_id, frame_bgr, force_detect=force_detect)
+
     def annotate(self, frame_bgr: np.ndarray, faces: list[FaceResult]) -> np.ndarray:
         draw_start = time.perf_counter()
         annotated = frame_bgr.copy()
@@ -378,10 +397,7 @@ class VisionService:
         if self._diagnostics_enabled:
             self._draw_metric.update(draw_total)
             if self._draw_metric.should_log(self._diagnostics_every_n):
-                logger.info(
-                    "Diagnostics: draw_show_avg_ms=%.2f",
-                    self._draw_metric.average_ms(),
-                )
+                logger.info("Diagnostics: draw_show_avg_ms=%.2f", self._draw_metric.average_ms())
         return annotated
 
     def placeholder_frame(self, message: str = "NO SIGNAL") -> np.ndarray:
@@ -399,4 +415,26 @@ class VisionService:
         return frame
 
     def reload_watchlist(self) -> None:
+        if self.engine_mode == "integrated" and self.integrated_engine is not None:
+            self.integrated_engine.rebuild_face_db()
+            return
         self.watchlist.reload()
+
+    def rebuild_face_db(self) -> dict[str, Any]:
+        if self.engine_mode == "integrated" and self.integrated_engine is not None:
+            stats = self.integrated_engine.rebuild_face_db()
+            return {
+                "mode": "integrated",
+                "people_processed": stats.people_processed,
+                "images_scanned": stats.images_scanned,
+                "images_used": stats.images_used,
+                "identities": stats.identities,
+            }
+        self.watchlist.reload()
+        return {
+            "mode": "legacy",
+            "people_processed": len(self.watchlist.entries),
+            "images_scanned": 0,
+            "images_used": 0,
+            "identities": [entry.name for entry in self.watchlist.entries],
+        }

@@ -74,9 +74,54 @@ class Settings(BaseSettings):
     mediamtx_whep_base_url: str = "http://127.0.0.1:8889"
     mediamtx_whep_path_template: str = "camera-{camera_id}"
 
+    # Integrated face engine kill-switch
+    face_engine_mode: str = Field(default="integrated", pattern="^(integrated|legacy)$")
+
+    # Face source / runtime
+    face_dataset_dir: Path = Path("faces_db")
+    face_source: str = "0"
+    face_model_name: str = "buffalo_l"
+
+    # GPU
+    face_ctx_id: int = 0
+    face_onnx_providers: str = "CUDAExecutionProvider,CPUExecutionProvider"
+    face_fail_if_no_cuda: bool = False
+
+    # Detection
+    face_det_size: str = "1600,1600"
+    face_det_conf_thresh: float = 0.05
+    face_upscale_for_det: float = 2.0
+    face_min_face_area: int = 30 * 30
+    face_max_faces: int = 100
+
+    # Tile scan
+    face_tile_scan_enabled: bool = True
+    face_tile_grid: str = "2,2"
+    face_tile_overlap: float = 0.05
+    face_tile_dedup_iou: float = 0.50
+    face_full_frame_det_when_tile: bool = False
+
+    # Speed
+    face_detect_every_n_frames: int = 5
+
+    # Recognition
+    face_recog_thresh: float = 0.20
+
+    # RTSP robustness
+    face_read_timeout_sec: int = 10
+    face_reconnect_wait_sec: float = 2.0
+    face_flush_frames_on_connect: int = 8
+
+    # Face DB cache
+    face_db_cache_path: Path = Path("backend/models/face_db.npz")
+
     @property
     def clip_storage_dir_resolved(self) -> Path:
         return self.clip_storage_dir.resolve()
+
+    @property
+    def face_db_cache_path_resolved(self) -> Path:
+        return self.face_db_cache_path.resolve()
 
     def _parse_det_size(self, value: str) -> tuple[int, int]:
         try:
@@ -90,11 +135,47 @@ class Settings(BaseSettings):
         except Exception:
             return self.insightface_det_size
 
+    def _parse_csv_pair(self, value: str, default: tuple[int, int], minimum: int = 1) -> tuple[int, int]:
+        try:
+            parts = [chunk.strip() for chunk in value.split(",")]
+            if len(parts) != 2:
+                return default
+            first = max(minimum, int(parts[0]))
+            second = max(minimum, int(parts[1]))
+            return first, second
+        except Exception:
+            return default
+
+    def _parse_provider_csv(self, value: str) -> list[str]:
+        chunks = [chunk.strip() for chunk in value.split(",") if chunk.strip()]
+        if not chunks:
+            return ["CPUExecutionProvider"]
+        return chunks
+
     @property
     def active_det_size(self) -> tuple[int, int]:
         if self.long_distance_mode:
             return self._parse_det_size(self.long_distance_det_size)
         return self.insightface_det_size
+
+    @property
+    def face_active_det_size(self) -> tuple[int, int]:
+        return self._parse_csv_pair(self.face_det_size, default=(1600, 1600), minimum=64)
+
+    @property
+    def face_active_tile_grid(self) -> tuple[int, int]:
+        return self._parse_csv_pair(self.face_tile_grid, default=(2, 2), minimum=1)
+
+    @property
+    def face_active_providers(self) -> list[str]:
+        return self._parse_provider_csv(self.face_onnx_providers)
+
+    @property
+    def face_active_source(self) -> int | str:
+        raw = str(self.face_source).strip()
+        if raw == "0":
+            return 0
+        return raw
 
     @property
     def active_resize_mode(self) -> str:
@@ -105,6 +186,10 @@ class Settings(BaseSettings):
     @property
     def active_detect_every_n(self) -> int:
         return max(int(self.detect_every_n_frames), 1)
+
+    @property
+    def face_active_detect_every_n(self) -> int:
+        return max(int(self.face_detect_every_n_frames), 1)
 
     @property
     def active_min_face_area(self) -> int:
@@ -118,6 +203,5 @@ class Settings(BaseSettings):
 
 
 @lru_cache
-
 def get_settings() -> Settings:
     return Settings()

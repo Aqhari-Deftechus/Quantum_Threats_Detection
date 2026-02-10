@@ -123,3 +123,11 @@ def enroll_embedding(
     )
 
     return _identity_out(session, identity)
+
+
+@router.post("/rebuild")
+def rebuild_identities_face_db() -> dict[str, object]:
+    from ..state import vision_service
+
+    result = vision_service.rebuild_face_db()
+    return {"status": "rebuilt", **result}

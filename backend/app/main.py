@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import numpy as np
+import onnxruntime as ort
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    logger.info("ONNXRuntime providers at startup: %s", ort.get_available_providers())
     Base.metadata.create_all(bind=engine)
     clip_dir = settings.clip_storage_dir_resolved
     clip_dir.mkdir(parents=True, exist_ok=True)
