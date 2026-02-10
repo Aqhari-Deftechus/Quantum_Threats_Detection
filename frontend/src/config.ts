@@ -9,15 +9,11 @@ const parseBoolean = (value: string | undefined, fallback: boolean) => {
 };
 
 const getDefaultApiBaseUrl = () => {
-  if (import.meta.env.DEV) {
-    return '';
-  }
-  return '';
+  return 'http://127.0.0.1:8010';
 };
 
 const getDefaultWsBaseUrl = () => {
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${protocol}://${window.location.host}`;
+  return 'ws://127.0.0.1:8010';
 };
 
 export const API_BASE_URL = trimTrailingSlash(

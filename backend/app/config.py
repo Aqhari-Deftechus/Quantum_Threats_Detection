@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     db_url: str = "sqlite:///./qtd.db"
     log_level: str = "INFO"
+    cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
     evidence_worm_mode: bool = True
     ffmpeg_path: str = "ffmpeg"
     audit_chain_id: str = "default"
@@ -45,6 +46,7 @@ class Settings(BaseSettings):
     ws_event_interval_seconds: float = 1.0
     camera_queue_size: int = 2
     capture_fps: int = 12
+    camera_autostart_on_startup: bool = True
 
     scrfd_model_path: Path = Path("backend/models/scrfd_10g_bnkps.onnx")
     arcface_model_path: Path = Path("backend/models/glintr100.onnx")
@@ -138,6 +140,12 @@ class Settings(BaseSettings):
 
     # Face DB cache
     face_db_cache_path: Path = Path("backend/models/face_db.npz")
+    face_enroll_debug_dir: Path = Path("backend/static/debug/face_enroll_failed")
+
+    face_enroll_det_size: str = "1600,1600"
+    face_enroll_det_conf_thresh: float = 0.05
+    face_enroll_upscale_for_det: float = 2.0
+    face_enroll_min_face_area: int = 30 * 30
 
     @property
     def clip_storage_dir_resolved(self) -> Path:
@@ -211,6 +219,9 @@ class Settings(BaseSettings):
             return ["CPUExecutionProvider"]
         return chunks
 
+    def _parse_csv_items(self, value: str) -> list[str]:
+        return [chunk.strip() for chunk in value.split(",") if chunk.strip()]
+
     @property
     def active_det_size(self) -> tuple[int, int]:
         if self.long_distance_mode:
@@ -228,6 +239,17 @@ class Settings(BaseSettings):
     @property
     def face_active_providers(self) -> list[str]:
         return self._parse_provider_csv(self.face_onnx_providers)
+
+    @property
+    def allowed_cors_origins(self) -> list[str]:
+        parsed = self._parse_csv_items(self.cors_origins)
+        if not parsed:
+            return ["http://127.0.0.1:5173", "http://localhost:5173"]
+        return parsed
+
+    @property
+    def face_enroll_active_det_size(self) -> tuple[int, int]:
+        return self._parse_csv_pair(self.face_enroll_det_size, default=self.face_active_det_size, minimum=64)
 
     @property
     def face_active_source(self) -> int | str:

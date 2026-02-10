@@ -36,9 +36,12 @@ async def lifespan(app: FastAPI):
         session = Session(bind=connection)
         cameras = session.scalars(select(Camera)).all()
         camera_registry.load_from_db(cameras)
-        for camera in cameras:
-            if camera.enabled:
-                camera_registry.start_worker(camera)
+        if settings.camera_autostart_on_startup:
+            for camera in cameras:
+                if camera.enabled:
+                    camera_registry.start_worker(camera)
+        else:
+            logger.info("Camera autostart disabled (QTD_CAMERA_AUTOSTART_ON_STARTUP=false).")
         embeddings = session.scalars(select(IdentityEmbedding)).all()
         name_map = {identity.id: identity.name for identity in session.scalars(select(Identity)).all()}
         if embeddings:
@@ -59,7 +62,7 @@ static_dir.mkdir(parents=True, exist_ok=True)
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.allowed_cors_origins,
     allow_credentials=True,
     allow_methods=["*"] ,
     allow_headers=["*"],
