@@ -33,11 +33,23 @@ class IntegratedFaceEngine:
         self._error: str | None = None
         self._frame_counter: dict[int, int] = {}
         self._last_faces: dict[int, list[FaceRecord]] = {}
-        self._db = FaceDbStore(settings.face_dataset_dir_resolved, settings.face_db_cache_path_resolved)
+        self._db = FaceDbStore(
+            settings.face_dataset_dir_resolved,
+            settings.face_db_cache_path_resolved,
+            settings.face_enroll_active_det_size,
+            settings.face_enroll_det_conf_thresh,
+            settings.face_enroll_upscale_for_det,
+            settings.face_enroll_min_face_area,
+            settings.face_enroll_debug_dir,
+        )
         self._init_app()
         if self._ready:
             cache_loaded = self._db.load_cache()
             if not cache_loaded:
+                logger.info(
+                    "Face DB cache rebuilt: reason=%s",
+                    self._db.last_cache_rebuild_reason or "cache_load_failed",
+                )
                 self.rebuild_face_db()
 
     @property
@@ -88,6 +100,14 @@ class IntegratedFaceEngine:
             self._provider = providers[0]
             self._ready = True
             self._error = None
+            model_route = getattr(self._app, "models", {})
+            provider_map: dict[str, object] = {}
+            if isinstance(model_route, dict):
+                for name, model in model_route.items():
+                    session = getattr(model, "session", None)
+                    if session is not None and hasattr(session, "get_providers"):
+                        provider_map[name] = session.get_providers()
+            logger.info("InsightFace session providers in use: %s", provider_map)
             logger.info(
                 "Integrated face engine ready model=%s provider=%s det_size=%s",
                 self.settings.face_model_name,
@@ -141,14 +161,15 @@ class IntegratedFaceEngine:
             bbox[1] += offset_y
             bbox[2] += offset_x
             bbox[3] += offset_y
-            kps = getattr(face, "kps", None)
-            landmarks = None
-            if kps is not None:
-                landmarks = np.asarray(kps, dtype=np.float32)
+
+            landmarks = getattr(face, "kps", None)
+            if landmarks is not None:
+                landmarks = np.asarray(landmarks, dtype=np.float32)
                 if scale != 1.0:
                     landmarks = landmarks / float(scale)
                 landmarks[:, 0] += offset_x
                 landmarks[:, 1] += offset_y
+
             records.append(
                 {
                     "bbox": bbox,
