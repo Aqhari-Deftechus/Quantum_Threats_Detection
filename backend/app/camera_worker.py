@@ -107,7 +107,7 @@ class CameraWorker:
         if not settings.rtsp_read_latest_frame:
             return frame
         latest = frame
-        for _ in range(2):
+        for _ in range(max(0, int(settings.rtsp_drain_frames))):
             grabbed = capture.grab()
             if not grabbed:
                 break
@@ -138,10 +138,19 @@ class CameraWorker:
         last_tick = time.time()
         frame_count = 0
         frame_interval = 1.0 / max(self.capture_fps, 1)
+        next_capture_deadline = time.perf_counter()
         while not self._stop_event.is_set():
+            now_tick = time.perf_counter()
+            if now_tick < next_capture_deadline:
+                time.sleep(min(next_capture_deadline - now_tick, frame_interval))
+                continue
+
             read_start = time.perf_counter()
             ok, frame = capture.read()
             read_end = time.perf_counter()
+            next_capture_deadline += frame_interval
+            if read_end - next_capture_deadline > frame_interval * 3:
+                next_capture_deadline = read_end
             timeout_s = max(1, int(settings.face_read_timeout_sec))
             if (read_end - read_start) > float(timeout_s):
                 logger.warning("Camera read timeout exceeded: camera_id=%s elapsed=%.2fs", self.camera_id, read_end - read_start)
@@ -187,10 +196,6 @@ class CameraWorker:
                 frame = self._drain_latest_frame(capture, frame)
 
             now = time.time()
-            if self.last_frame_time and (now - self.last_frame_time) < frame_interval:
-                time.sleep(frame_interval - (now - self.last_frame_time))
-                continue
-
             frame_count += 1
             now = time.time()
             if now - last_tick >= 1.0:
@@ -198,11 +203,7 @@ class CameraWorker:
                 frame_count = 0
                 last_tick = now
 
-            success, buffer = cv2.imencode(".jpg", frame)
-            if not success:
-                continue
-
-            packet = FramePacket(frame=buffer.tobytes(), timestamp=now)
+            packet = FramePacket(frame=b"", timestamp=now)
             with self._lock:
                 if len(self.queue) >= self.queue_maxsize:
                     self.queue.popleft()

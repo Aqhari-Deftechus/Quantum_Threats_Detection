@@ -30,48 +30,60 @@ export type WsOverlay = {
   };
 };
 
+const OVERLAY_MIN_INTERVAL_MS = 33;
+
 export default function App() {
   const [lastOverlay, setLastOverlay] = useState<WsOverlay | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const lastUpdateRef = useRef(0);
   const pendingPayloadRef = useRef<WsOverlay | null>(null);
-  const pendingTimerRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
+    const scheduleFlush = () => {
+      if (rafRef.current !== null) {
+        return;
+      }
+
+      const flush = (ts: number) => {
+        rafRef.current = null;
+        const payload = pendingPayloadRef.current;
+        if (!payload) {
+          return;
+        }
+
+        const elapsed = ts - lastUpdateRef.current;
+        if (elapsed >= OVERLAY_MIN_INTERVAL_MS) {
+          lastUpdateRef.current = ts;
+          pendingPayloadRef.current = null;
+          setLastOverlay(payload);
+          return;
+        }
+
+        scheduleFlush();
+      };
+
+      rafRef.current = window.requestAnimationFrame(flush);
+    };
+
     const ws = new WebSocket(`${WS_BASE_URL}/ws`);
     ws.onopen = () => setWsConnected(true);
     ws.onclose = () => setWsConnected(false);
     ws.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data) as WsOverlay;
-        const now = Date.now();
-        const elapsed = now - lastUpdateRef.current;
-        if (elapsed >= 100) {
-          lastUpdateRef.current = now;
-          setLastOverlay(payload);
-          return;
-        }
         pendingPayloadRef.current = payload;
-        if (pendingTimerRef.current === null) {
-          const delay = Math.max(100 - elapsed, 0);
-          pendingTimerRef.current = window.setTimeout(() => {
-            pendingTimerRef.current = null;
-            if (pendingPayloadRef.current) {
-              lastUpdateRef.current = Date.now();
-              setLastOverlay(pendingPayloadRef.current);
-              pendingPayloadRef.current = null;
-            }
-          }, delay);
-        }
+        scheduleFlush();
       } catch {
         setLastOverlay(null);
       }
     };
+
     return () => {
       ws.close();
-      if (pendingTimerRef.current !== null) {
-        window.clearTimeout(pendingTimerRef.current);
-        pendingTimerRef.current = null;
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
     };
   }, []);
