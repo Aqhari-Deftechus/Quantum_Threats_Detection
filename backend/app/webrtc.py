@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -49,21 +50,47 @@ class CameraVideoTrack(VideoStreamTrack):
         self.camera_registry = camera_registry
         self.fps = max(settings.webrtc_fps, 1)
         self.resolution = _parse_resolution(settings.webrtc_resolution)
+        self._target_interval = 1.0 / self.fps
+        self._next_send_at = time.perf_counter()
+        self._last_frame_timestamp = 0.0
 
     async def recv(self) -> VideoFrame:
-        await asyncio.sleep(1 / self.fps)
+        now = time.perf_counter()
+        if now < self._next_send_at:
+            await asyncio.sleep(self._next_send_at - now)
+
         runtime = self.camera_registry.snapshot_metrics(self.camera_id)
         frame_bgr = None
+        frame_ts = 0.0
         if runtime and runtime.worker:
             latest = runtime.worker.get_latest_bgr()
             if latest:
-                _, frame_bgr = latest
+                frame_ts, frame_bgr = latest
+
         if frame_bgr is None:
             frame_bgr = vision_service.placeholder_frame("NO SIGNAL")
+        elif frame_ts <= self._last_frame_timestamp:
+            await asyncio.sleep(min(self._target_interval * 0.5, 0.01))
+            runtime = self.camera_registry.snapshot_metrics(self.camera_id)
+            if runtime and runtime.worker:
+                latest = runtime.worker.get_latest_bgr()
+                if latest:
+                    frame_ts, frame_bgr = latest
+
+        if frame_ts > 0:
+            self._last_frame_timestamp = frame_ts
+
         if self.resolution:
             frame_bgr = cv2.resize(frame_bgr, self.resolution)
+
         frame = VideoFrame.from_ndarray(frame_bgr, format="bgr24")
         frame.pts, frame.time_base = await self.next_timestamp()
+
+        self._next_send_at += self._target_interval
+        now_done = time.perf_counter()
+        if now_done - self._next_send_at > self._target_interval * 2:
+            self._next_send_at = now_done + self._target_interval
+
         return frame
 
 

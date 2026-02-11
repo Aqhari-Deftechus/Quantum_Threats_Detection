@@ -43,9 +43,9 @@ class Settings(BaseSettings):
     ffmpeg_path: str = "ffmpeg"
     audit_chain_id: str = "default"
     clip_storage_dir: Path = Path("backend/static/event_clips")
-    ws_event_interval_seconds: float = 1.0
-    camera_queue_size: int = 2
-    capture_fps: int = 12
+    ws_event_interval_seconds: float = 0.08
+    camera_queue_size: int = 8
+    capture_fps: int = 25
     camera_autostart_on_startup: bool = True
 
     scrfd_model_path: Path = Path("backend/models/scrfd_10g_bnkps.onnx")
@@ -80,7 +80,8 @@ class Settings(BaseSettings):
 
     rtsp_prefer_ffmpeg: bool = True
     rtsp_buffer_size: int = 1
-    rtsp_read_latest_frame: bool = True
+    rtsp_read_latest_frame: bool = False
+    rtsp_drain_frames: int = 1
 
     matcher_dimension: int = 128
     matcher_faiss_enabled: bool = True
